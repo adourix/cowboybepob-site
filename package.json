@@ -9,7 +9,8 @@
     "typecheck": "npm run typecheck -w @cowboybepob/api && npm run typecheck -w @cowboybepob/web",
     "test": "node scripts/test-architecture.mjs",
     "start:api": "npm run start -w @cowboybepob/api",
-    "start:worker": "npm run worker -w @cowboybepob/api"
+    "start:worker": "npm run worker -w @cowboybepob/api",
+    "provider:add": "node apps/api/scripts/add-provider.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
