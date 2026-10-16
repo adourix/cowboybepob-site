@@ -7,17 +7,37 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: cowboybepob
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd="pg_isready -U postgres -d cowboybepob"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm install
-      - name: Architecture smoke tests
-        run: npm test
+      - run: PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d cowboybepob -f db/schema.sql
+      - run: PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d cowboybepob -f db/migrations/001_provider_credentials.sql
+      - run: PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d cowboybepob -f db/migrations/002_email_verification.sql
+      - run: npm test
       - name: Typecheck
         id: typecheck
         shell: bash
+        env:
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/cowboybepob
+          ENCRYPTION_KEY: ci-test-encryption-key
+          NODE_ENV: test
         run: |
           set +e
           npm run typecheck 2>&1 | tee typecheck.log
