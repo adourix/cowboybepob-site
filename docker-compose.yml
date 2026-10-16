@@ -17,7 +17,9 @@ services:
       retries: 10
 
   api:
-    build: ./apps/api
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
     environment:
       PORT: 4000
       DATABASE_URL: postgres://cowboybepob:${POSTGRES_PASSWORD:-local_dev_only}@db:5432/cowboybepob
@@ -29,7 +31,9 @@ services:
         condition: service_healthy
 
   web:
-    build: ./apps/web
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
     ports:
       - "5173:80"
     depends_on:
