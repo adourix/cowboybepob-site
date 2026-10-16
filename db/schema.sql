@@ -32,8 +32,8 @@ CREATE TABLE IF NOT EXISTS services(id uuid PRIMARY KEY DEFAULT gen_random_uuid(
 CREATE UNIQUE INDEX IF NOT EXISTS services_one_live_per_router_uq ON services(router_id) WHERE router_id IS NOT NULL AND status IN('PROVISIONING','ACTIVE','SUSPENDED');
 CREATE TABLE IF NOT EXISTS configs(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),public_code text UNIQUE NOT NULL DEFAULT('CFG-'||lpad(nextval('config_code_seq')::text,6,'0')),service_id uuid NOT NULL REFERENCES services(id),version integer NOT NULL,status text NOT NULL DEFAULT 'PENDING',protocol text NOT NULL,transport text,security text,client_credential_enc bytea NOT NULL,credential_key_id text NOT NULL,params jsonb NOT NULL DEFAULT '{}',created_at timestamptz NOT NULL DEFAULT now(),superseded_at timestamptz,UNIQUE(service_id,version));
 CREATE UNIQUE INDEX IF NOT EXISTS configs_one_current_uq ON configs(service_id) WHERE status='CURRENT';
-CREATE TABLE IF NOT EXISTS proxy_accounts(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),service_id uuid NOT NULL REFERENCES services(id),provider_instance_id uuid NOT NULL REFERENCES provider_instances(id),external_username text NOT NULL,external_ref text,status text NOT NULL DEFAULT 'PENDING',external_expire_at timestamptz,last_synced_at timestamptz,last_error text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(provider_instance_id,external_username));
-CREATE TABLE IF NOT EXISTS service_allocations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),service_id uuid NOT NULL REFERENCES services(id),endpoint_id uuid NOT NULL REFERENCES server_endpoints(id),proxy_account_id uuid REFERENCES proxy_accounts(id),status text NOT NULL DEFAULT 'RESERVED',reason text NOT NULL, supersedes_id uuid REFERENCES service_allocations(id),note text,failed_reason text,created_by_type text NOT NULL,created_by_id uuid,created_at timestamptz NOT NULL DEFAULT now(),activated_at timestamptz,retired_at timestamptz);
+CREATE TABLE IF NOT EXISTS proxy_accounts(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),service_id uuid NOT NULL REFERENCES services(id),provider_instance_id uuid NOT NULL REFERENCES provider_instances(id),external_username text NOT NULL,status text NOT NULL DEFAULT 'PENDING',external_ref text,external_expire_at timestamptz,last_synced_at timestamptz,last_error text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(provider_instance_id,external_username));
+CREATE TABLE IF NOT EXISTS service_allocations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),service_id uuid NOT NULL REFERENCES services(id),endpoint_id uuid NOT NULL REFERENCES server_endpoints(id),proxy_account_id uuid REFERENCES proxy_accounts(id),status text NOT NULL DEFAULT 'RESERVED',reason text NOT NULL,supersedes_id uuid REFERENCES service_allocations(id),note text,failed_reason text,created_by_type text NOT NULL,created_by_id uuid,created_at timestamptz NOT NULL DEFAULT now(),activated_at timestamptz,retired_at timestamptz);
 CREATE UNIQUE INDEX IF NOT EXISTS alloc_one_active_uq ON service_allocations(service_id) WHERE status='ACTIVE';
 CREATE UNIQUE INDEX IF NOT EXISTS alloc_one_pending_uq ON service_allocations(service_id) WHERE status IN('RESERVED','PROVISIONING');
 CREATE TABLE IF NOT EXISTS subscriptions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),public_code text UNIQUE NOT NULL DEFAULT('SUB-'||lpad(nextval('subscription_code_seq')::text,6,'0')),service_id uuid UNIQUE NOT NULL REFERENCES services(id),plan_id uuid NOT NULL REFERENCES config_plans(id),status text NOT NULL DEFAULT 'PENDING',starts_at timestamptz,current_period_end timestamptz,grace_until timestamptz,quota_bytes bigint,used_bytes bigint NOT NULL DEFAULT 0,usage_synced_at timestamptz,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
@@ -54,3 +54,30 @@ CREATE INDEX IF NOT EXISTS jobs_due_idx ON jobs(run_at) WHERE state='QUEUED';
 CREATE INDEX IF NOT EXISTS audit_created_idx ON audit_logs(occurred_at DESC);
 
 INSERT INTO app_settings(key,value) VALUES('grace_period_days','3'),('retention_days','30'),('provisioning_alert_hours','24'),('notifications','{"email":true}') ON CONFLICT(key) DO NOTHING;
+
+-- MVP convenience: automatically associate a newly-created endpoint with active categories
+-- that use the same protocol. This prevents a fresh native installation from creating
+-- plans that can never be allocated because category_endpoints was left empty.
+CREATE OR REPLACE FUNCTION cb_link_endpoint_to_categories() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO category_endpoints(category_id,endpoint_id,status,priority)
+  SELECT id,NEW.id,'ACTIVE',0 FROM config_categories
+  WHERE status='ACTIVE' AND protocol=NEW.protocol
+  ON CONFLICT(category_id,endpoint_id) DO NOTHING;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS cb_endpoint_auto_link ON server_endpoints;
+CREATE TRIGGER cb_endpoint_auto_link AFTER INSERT ON server_endpoints FOR EACH ROW EXECUTE FUNCTION cb_link_endpoint_to_categories();
+
+CREATE OR REPLACE FUNCTION cb_link_category_to_endpoints() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.status='ACTIVE' THEN
+    INSERT INTO category_endpoints(category_id,endpoint_id,status,priority)
+    SELECT NEW.id,id,'ACTIVE',0 FROM server_endpoints
+    WHERE status='ACTIVE' AND protocol=NEW.protocol
+    ON CONFLICT(category_id,endpoint_id) DO NOTHING;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS cb_category_auto_link ON config_categories;
+CREATE TRIGGER cb_category_auto_link AFTER INSERT OR UPDATE OF status,protocol ON config_categories FOR EACH ROW EXECUTE FUNCTION cb_link_category_to_endpoints();
