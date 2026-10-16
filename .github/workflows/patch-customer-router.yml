@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      - name: Add customer router catalog endpoint
+      - name: Add customer router catalog endpoint and wire UI
         shell: python
         run: |
           from pathlib import Path
@@ -24,10 +24,16 @@ jobs:
               i = s.index(marker)
               s = s[:i] + route + s[i:]
               p.write_text(s)
+          w = Path('apps/web/src/app.tsx')
+          s = w.read_text()
+          old = "function RouterProductLoader({onBuy}:{onBuy:(id:string)=>void}){const[p,setP]=useState<any[]>([]);useEffect(()=>{void api('/api/v1/admin/catalog').then(x=>setP(x.routerProducts||[])).catch(()=>{})},[]);return <>{p.map(x=><div className=\"catalog-card\" key={x.id}><b>{x.name}</b><span>{x.model} · {money(x.price_minor,x.currency)}</span><button className=\"primary-button\" onClick={()=>onBuy(x.id)}>طلب الراوتر</button></div>)}</>}"
+          new = "function RouterProductLoader({onBuy}:{onBuy:(id:string)=>void}){const[p,setP]=useState<any[]>([]);useEffect(()=>{void api('/api/v1/customer/catalog/router-products').then(x=>setP(Array.isArray(x)?x:[])).catch(()=>{})},[]);return <>{p.map(x=><div className=\"catalog-card\" key={x.id}><b>{x.name}</b><span>{x.model} · {money(x.price_minor,x.currency)}</span><button className=\"primary-button\" onClick={()=>onBuy(x.id)}>طلب الراوتر</button></div>)}</>}"
+          if old in s:
+              w.write_text(s.replace(old, new))
       - name: Commit patch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apps/api/src/main.ts
+          git add apps/api/src/main.ts apps/web/src/app.tsx
           git diff --cached --quiet || git commit -m "fix: expose router catalog to customers [router-patch]"
           git push
