@@ -16,7 +16,7 @@ const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || '';
 
 type Principal = { type: 'STAFF' | 'CUSTOMER'; id: string; role?: string; email: string; fullName: string };
-type Req = FastifyRequest & { params: Record<string, string>; principal?: Principal; sessionId?: string; csrf?: string };
+type Req = FastifyRequest & { params: any; principal?: Principal; sessionId?: string; csrf?: string };
 
 declare module 'fastify' { interface FastifyRequest { principal?: Principal; sessionId?: string; csrf?: string } }
 
