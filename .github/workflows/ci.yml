@@ -13,6 +13,8 @@ jobs:
         with:
           node-version: 20
       - run: npm install
+      - name: Architecture smoke tests
+        run: npm test
       - name: Typecheck
         id: typecheck
         shell: bash
