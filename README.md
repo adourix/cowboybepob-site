@@ -1,55 +1,57 @@
 # CowboyBepob Platform — Native MVP
 
-منصة MVP لإدارة وبيع خدمات Proxy/Subscriptions والراوترات، مبنية على `SITE_ARCHITECTURE.md` وتعمل **Native على Ubuntu/Debian بدون Docker**.
+منصة MVP لإدارة وبيع خدمات Proxy/Subscriptions والراوترات، مبنية على `SITE_ARCHITECTURE.md` وتعمل Native على Ubuntu/Debian بدون Docker.
 
-## منافذ التشغيل
+## الحالة الحالية
 
-- `5001` — Nginx / الموقع العام
-- `5002` — Fastify API على `127.0.0.1`
-- `5003` — Vite أثناء التطوير
-- `5432` — PostgreSQL
-- `8000` — Marzban حسب إعدادك
-
-## MVP الموجود
-
+- React + TypeScript للواجهة.
+- Fastify + TypeScript للـAPI.
+- PostgreSQL للحالة التجارية.
+- Worker مستقل لمعالجة الـjobs باستخدام `FOR UPDATE SKIP LOCKED`.
 - Admin Panel وCustomer Portal بالعربية وRTL.
 - Staff/Customer authentication، Argon2id، sessions، CSRF، TOTP وRBAC.
-- PostgreSQL business state.
 - Catalog: categories / plans / router products.
 - Customers / services / configs / subscriptions / allocations.
 - Orders مع `Idempotency-Key`.
-- Manual payments + payment events/webhook foundation.
-- DB worker مع `FOR UPDATE SKIP LOCKED` وretry/backoff.
-- Marzban provisioning adapter.
+- Manual payments + webhook foundation.
+- Marzban provisioning adapter مع credentials مشفرة داخل PostgreSQL.
 - Router inventory/lifecycle.
 - Server hosts/endpoints.
 - Audit log.
 - Nginx + systemd native deployment.
 
-## المؤجل خارج MVP
+## ما زال خارج MVP
 
 - Tailscale API/OAuth وربط الأجهزة الحقيقي.
 - RouterGateway / `cb-remote` وتطبيق إعدادات OpenWrt فعليًا.
 - Payment gateway تجاري كامل.
 - Monitoring/Prometheus/Grafana.
 - Firmware fleet management.
-- Automatic migration/load-aware balancing.
-- Versioned DB migrations.
+- Automatic migration/load-aware balancing الكامل.
 - Full refund/reconciliation workflows.
 
-## التثبيت
+## المنافذ
 
-```bash
-sudo apt update
-sudo apt install -y git curl ca-certificates build-essential nginx postgresql postgresql-contrib openssl python3
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-sudo mkdir -p /var/www
-sudo git clone https://github.com/adourix/cowboybepob-site.git /var/www/cowboybepob
-cd /var/www/cowboybepob
-```
+- `5001` — Nginx / الموقع العام وAdmin/Customer UI.
+- `5002` — Fastify API على `127.0.0.1`.
+- `5003` — Vite أثناء التطوير.
+- `5432` — PostgreSQL.
+- `8000` — Marzban في السيرفر المنفصل حسب إعدادك.
 
-PostgreSQL:
+Marzban ليس جزءًا من خادم التطبيق. الـAPI والـworker يتعاملان معه عبر `provider_instances`.
+
+## المتطلبات
+
+- Ubuntu/Debian.
+- Node.js 22 أو أحدث.
+- PostgreSQL.
+- Nginx.
+- حساب Linux الموجود `abdulrahman`.
+- مشروع التطبيق في `/home/abdulrahman/projects/cowboybepob`.
+
+## إعداد PostgreSQL
+
+أنشئ قاعدة البيانات والمستخدم حسب إعداد السيرفر:
 
 ```bash
 sudo -u postgres psql
@@ -61,16 +63,30 @@ CREATE DATABASE cowboybepob OWNER cowboybepob;
 \q
 ```
 
+طبّق الـschema:
+
 ```bash
+cd ~/projects/cowboybepob
 PGPASSWORD='CHANGE_THIS_PASSWORD' psql -h 127.0.0.1 -U cowboybepob -d cowboybepob -f db/schema.sql
 ```
 
-Environment:
+وطبّق migrations الموجودة:
 
 ```bash
-sudo mkdir -p /etc/cowboybepob
-sudo nano /etc/cowboybepob/site.env
+PGPASSWORD='CHANGE_THIS_PASSWORD' psql -h 127.0.0.1 -U cowboybepob -d cowboybepob -f db/migrations/001_provider_credentials.sql
 ```
+
+## Environment
+
+ملف `.env` داخل المشروع ومملوك لـ`abdulrahman`:
+
+```bash
+cd ~/projects/cowboybepob
+cp .env.example .env
+nano .env
+```
+
+استخدم:
 
 ```env
 NODE_ENV=production
@@ -83,51 +99,87 @@ ENCRYPTION_KEY=RANDOM_32_BYTE_SECRET
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=STRONG_ADMIN_PASSWORD
 ADMIN_TOTP_SECRET=BASE32_TOTP_SECRET
-MARZBAN_BASE_URL=http://127.0.0.1:8000
-MARZBAN_USERNAME=admin
-MARZBAN_PASSWORD=MARZBAN_PASSWORD
 VITE_API_URL=/
 ```
 
-Build:
+لا تضع `MARZBAN_USERNAME` أو `MARZBAN_PASSWORD` أو `MARZBAN_BASE_URL` في `.env`. بيانات دخول Marzban تُخزن مشفرة داخل `provider_instances`.
+
+## التحقق من الكود قبل التشغيل
+
+كل أوامر المشروع تعمل كمستخدم `abdulrahman`:
 
 ```bash
-sudo useradd --system --create-home --home-dir /var/lib/cowboybepob --shell /usr/sbin/nologin cowboybepob || true
-sudo chown -R cowboybepob:cowboybepob /var/www/cowboybepob
-sudo -u cowboybepob bash -lc 'cd /var/www/cowboybepob && npm install && npm run typecheck && npm run build'
+cd ~/projects/cowboybepob
+npm install
+npm test
+npm run typecheck
+npm run build
 ```
 
-Install services:
+## إضافة Marzban Provider
+
+بعد ضبط `.env` وتطبيق migration:
+
+```bash
+cd ~/projects/cowboybepob
+npm run provider:add -- \
+  --name="Default Marzban" \
+  --url="http://MARZBAN_SERVER:8000" \
+  --username="MARZBAN_USERNAME" \
+  --password="MARZBAN_PASSWORD"
+```
+
+بيانات الدخول لا تُحفظ في `.env`.
+
+## إعداد systemd
+
+الخدمتان تعملان بالكامل كمستخدم `abdulrahman`:
 
 ```bash
 sudo cp deploy/systemd/cowboybepob-api.service /etc/systemd/system/
 sudo cp deploy/systemd/cowboybepob-worker.service /etc/systemd/system/
-sudo cp deploy/nginx/cowboybepob.conf /etc/nginx/sites-available/cowboybepob.conf
-sudo ln -sfn /etc/nginx/sites-available/cowboybepob.conf /etc/nginx/sites-enabled/cowboybepob.conf
-sudo rm -f /etc/nginx/sites-enabled/default
 sudo systemctl daemon-reload
-sudo nginx -t
-sudo systemctl enable --now cowboybepob-api cowboybepob-worker nginx
+sudo systemctl enable --now cowboybepob-api cowboybepob-worker
 ```
 
-## التحقق
+## إعداد Nginx
+
+إعداد CowboyBepob يضاف إلى `conf.d` ولا يحذف أو يستبدل إعدادات Nginx الموجودة:
+
+```bash
+sudo cp deploy/nginx/cowboybepob.conf /etc/nginx/conf.d/cowboybepob.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+هذا مهم إذا كان Lingo Store أو أي موقع آخر يعمل على نفس Nginx.
+
+## التحقق بعد التشغيل
 
 ```bash
 curl http://127.0.0.1:5002/health
 curl http://127.0.0.1:5001/health
 curl -I http://127.0.0.1:5001/
+
 sudo systemctl --no-pager status cowboybepob-api
 sudo systemctl --no-pager status cowboybepob-worker
 sudo nginx -t
 ```
 
+الموقع يكون على:
+
+```text
+http://SERVER_IP:5001
+```
+
 ## Audit كامل
 
 ```bash
-cd /var/www/cowboybepob
-sudo chmod +x deploy/audit-native.sh
-sudo deploy/audit-native.sh
+cd ~/projects/cowboybepob
+deploy/audit-native.sh
 ```
+
+الـaudit يفحص ownership، Node، PostgreSQL، Nginx، systemd، health، ports، typecheck وbuild.
 
 ## Logs
 
@@ -139,23 +191,29 @@ sudo journalctl -u nginx -n 100 --no-pager
 
 ## Development بدون Containers
 
-API على `5002`:
+API:
 
 ```bash
-cd /var/www/cowboybepob
-export DATABASE_URL='postgres://cowboybepob:PASSWORD@127.0.0.1:5432/cowboybepob'
-export PORT=5002
+cd ~/projects/cowboybepob
 npm run dev -w @cowboybepob/api
 ```
 
-Web على `5003`:
+Web:
 
 ```bash
 npm run dev -w @cowboybepob/web
 ```
 
-## ملاحظة provisioning
+## Provisioning
 
-لكي ينجح تخصيص خدمة، يجب أن يكون هناك `server_endpoint` فعال مرتبط بالفئة عبر `category_endpoints`، وأن يطابق `provider_inbound_tag` الـinbound الحقيقي في Marzban. بدون endpoint مرتبط، الـworker لن يستطيع عمل allocation.
+لكي ينجح تخصيص خدمة، يجب وجود `server_endpoint` فعال مرتبط بالفئة عبر `category_endpoints`، ويجب أن يطابق `provider_inbound_tag` الـinbound الحقيقي في Marzban.
 
-راجع `docs/IMPLEMENTATION_STATUS.md` قبل اعتبار النظام Production Complete.
+الـworker يختار endpoint لديه capacity ويستخدم مدة الخطة، ثم ينشئ/يحدّث مستخدم Marzban ويحوّل الـconfig إلى VLESS/VMess link عند السماح بذلك.
+
+## ملاحظات مهمة
+
+- لا تشغّل أوامر npm بصلاحيات root.
+- ملكية المشروع والـ`.env` يجب أن تبقى `abdulrahman:abdulrahman`.
+- `sudo` يستخدم فقط لأوامر النظام مثل systemd وNginx وPostgreSQL.
+- لا تستخدم `sudo -u cowboybepob`؛ لا يوجد service user منفصل في هذا التصميم.
+- لا تحذف إعدادات Nginx الموجودة على السيرفر.
