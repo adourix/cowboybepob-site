@@ -7,7 +7,8 @@
     "dev": "concurrently -k -n api,web -c blue,green \"npm run dev -w @cowboybepob/api\" \"npm run dev -w @cowboybepob/web\"",
     "build": "npm run build -w @cowboybepob/api && npm run build -w @cowboybepob/web",
     "typecheck": "npm run typecheck -w @cowboybepob/api && npm run typecheck -w @cowboybepob/web",
-    "start:api": "npm run start -w @cowboybepob/api"
+    "start:api": "npm run start -w @cowboybepob/api",
+    "start:worker": "npm run worker -w @cowboybepob/api"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
