@@ -1,0 +1,21 @@
+[Unit]
+Description=CowboyBepob worker
+After=network-online.target postgresql.service cowboybepob-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cowboybepob
+Group=cowboybepob
+WorkingDirectory=/var/www/cowboybepob
+EnvironmentFile=/etc/cowboybepob/site.env
+ExecStart=/usr/bin/npm run worker -w @cowboybepob/api
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
