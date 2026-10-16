@@ -30,7 +30,7 @@ fi
 
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR"
 
-sudo -u "$SERVICE_USER" bash -lc "cd '$APP_DIR' && npm install && npm run typecheck && npm run build"
+sudo -u "$SERVICE_USER" bash -lc "cd '$APP_DIR' && npm install && npm test && npm run typecheck && npm run build"
 
 install -d -m 0755 /etc/cowboybepob
 if [[ ! -f /etc/cowboybepob/site.env ]]; then
@@ -49,7 +49,8 @@ nginx -t
 systemctl enable nginx cowboybepob-api cowboybepob-worker
 
 echo "Native installation prepared."
-echo "Public site: http://SERVER_IP:5001"
+echo "Customer site: http://SERVER_IP:5001"
+echo "Admin portal: http://admin.YOUR_DOMAIN:5001/admin"
 echo "Private API: 127.0.0.1:5002"
 echo "Dev Vite: 0.0.0.0:5003"
 echo "Configure /etc/cowboybepob/site.env, import db/schema.sql, then start services."
