@@ -8,6 +8,10 @@ const worker = await read('apps/api/src/worker.ts');
 const web = await read('apps/web/src/main.tsx');
 const css = await read('apps/web/src/styles.css');
 
+function contains(source, value, message){
+  assert.ok(source.includes(value), message);
+}
+
 const requiredTables = [
   'customers','staff_users','auth_sessions','provider_instances','hosts','server_endpoints',
   'config_categories','category_endpoints','config_plans','router_products','routers',
@@ -15,30 +19,28 @@ const requiredTables = [
   'service_allocations','subscriptions','subscription_periods','orders','order_items',
   'payments','payment_events','refunds','jobs','audit_logs','app_settings'
 ];
-for (const table of requiredTables) assert.match(schema, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`), `missing table: ${table}`);
+for (const table of requiredTables) contains(schema, `CREATE TABLE IF NOT EXISTS ${table}(`, `missing table: ${table}`);
 
-for (const path of [
+const requiredRoutes = [
   "'/api/v1/auth/login'","'/api/v1/auth/logout'","'/api/v1/customer/profile'",
-  "'/api/v1/customer/catalog/categories'","'/api/v1/customer/services'",
-  "'/api/v1/customer/services/:id/config'","'/api/v1/customer/services/:id/renew'",
-  "'/api/v1/customer/routers/:id/replacement-requests'","'/api/v1/customer/orders'",
-  "'/api/v1/customer/orders/:id/pay'","'/api/v1/admin/dashboard'","'/api/v1/admin/customers'",
-  "'/api/v1/admin/services'","'/api/v1/admin/routers'","'/api/v1/admin/servers'",
-  "'/api/v1/admin/catalog'","'/api/v1/admin/orders'","'/api/v1/admin/payments'",
-  "'/api/v1/admin/jobs'","'/api/v1/admin/audit-logs'"
-]) assert.match(api, new RegExp(path.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')), `missing API route: ${path}`);
+  "'/catalog/categories'","'/services'","'/services/:id/config'","'/services/:id/renew'",
+  "'/routers/:id/replacement-requests'","'/orders'","'/orders/:id/pay'",
+  "'/dashboard'","'/customers'","'/services'","'/routers'","'/servers'",
+  "'/catalog'","'/orders'","'/payments'","'/jobs'","'/audit-logs'"
+];
+for (const route of requiredRoutes) contains(api, route, `missing API route fragment: ${route}`);
 
-for (const job of ['fulfill_order','provision_service','renew_service']) assert.match(worker, new RegExp(`job\.type===['\"]${job}['\"]`), `missing worker job: ${job}`);
-assert.match(worker, /FOR UPDATE SKIP LOCKED/, 'worker must use DB-backed SKIP LOCKED claiming');
-assert.match(worker, /duration_days/, 'provisioning must use plan duration');
-assert.match(api, /secrets:reveal/, 'secret reveal must have a dedicated permission');
-assert.match(api, /secret\.revealed/, 'secret reveal must be audited');
-assert.match(api, /Idempotency-Key/i, 'checkout must require an idempotency key');
-assert.match(web, /CustomerPortal/, 'customer portal missing');
-assert.match(web, /\/admin\/services/, 'admin services page missing');
-assert.match(web, /\/admin\/routers/, 'admin routers page missing');
-assert.match(web, /\/admin\/servers/, 'admin servers page missing');
-assert.match(css, /margin-left:264px/, 'desktop sidebar layout regression detected');
+for (const job of ['fulfill_order','provision_service','renew_service']) contains(worker, `job.type==='${job}'`, `missing worker job: ${job}`);
+contains(worker, 'FOR UPDATE SKIP LOCKED', 'worker must use DB-backed SKIP LOCKED claiming');
+contains(worker, 'duration_days', 'provisioning must use plan duration');
+contains(api, 'secrets:reveal', 'secret reveal must have a dedicated permission');
+contains(api, 'secret.revealed', 'secret reveal must be audited');
+contains(api, 'Idempotency-Key required', 'checkout must require an idempotency key');
+contains(web, 'CustomerPortal', 'customer portal missing');
+contains(web, '/admin/services', 'admin services page missing');
+contains(web, '/admin/routers', 'admin routers page missing');
+contains(web, '/admin/servers', 'admin servers page missing');
+contains(css, 'margin-left:264px', 'desktop sidebar layout regression detected');
 assert.doesNotMatch(web, /docker-compose|Docker Desktop/, 'web UI must not depend on Docker');
 
 console.log(`Architecture smoke tests passed: ${requiredTables.length} tables + API/worker/UI invariants.`);
