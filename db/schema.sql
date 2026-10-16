@@ -1,126 +1,155 @@
--- Initial PostgreSQL schema scaffold. Apply with a migration tool before production use.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS citext;
 
-CREATE TYPE account_status AS ENUM ('pending', 'active', 'suspended', 'closed');
-CREATE TYPE service_status AS ENUM ('pending', 'active', 'suspended', 'expired', 'cancelled');
-CREATE TYPE router_status AS ENUM ('pending', 'online', 'offline', 'degraded', 'disabled');
-CREATE TYPE job_status AS ENUM ('queued', 'running', 'succeeded', 'failed', 'cancelled');
+CREATE SEQUENCE IF NOT EXISTS customer_code_seq;
+CREATE SEQUENCE IF NOT EXISTS router_code_seq;
+CREATE SEQUENCE IF NOT EXISTS endpoint_code_seq;
+CREATE SEQUENCE IF NOT EXISTS service_code_seq;
+CREATE SEQUENCE IF NOT EXISTS config_code_seq;
+CREATE SEQUENCE IF NOT EXISTS subscription_code_seq;
+CREATE SEQUENCE IF NOT EXISTS order_code_seq START 1001;
 
 CREATE TABLE IF NOT EXISTS customers (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  email text NOT NULL UNIQUE,
-  display_name text NOT NULL,
-  password_hash text,
-  status account_status NOT NULL DEFAULT 'pending',
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), public_code text UNIQUE NOT NULL DEFAULT ('CUS-'||lpad(nextval('customer_code_seq')::text,6,'0')),
+ full_name text NOT NULL, email citext UNIQUE NOT NULL, email_verified_at timestamptz,
+ mobile_phone text NOT NULL CHECK (mobile_phone ~ '^\+?[0-9]{8,15}$'), address_line text NOT NULL DEFAULT '', city text NOT NULL DEFAULT '', governorate text, country char(2) NOT NULL DEFAULT 'EG', password_hash text,
+ status text NOT NULL DEFAULT 'INVITED' CHECK(status IN ('INVITED','ACTIVE','BLOCKED','DELETED')), created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz,
+ CHECK(status IN ('INVITED','DELETED') OR password_hash IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS customers_mobile_idx ON customers(mobile_phone);
+
+CREATE TABLE IF NOT EXISTS customer_landlines (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), customer_id uuid NOT NULL REFERENCES customers(id) ON DELETE CASCADE, number text NOT NULL CHECK(number ~ '^0[0-9]{8,10}$'), label text, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(customer_id,number)
 );
 
 CREATE TABLE IF NOT EXISTS staff_users (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  email text NOT NULL UNIQUE,
-  display_name text NOT NULL,
-  password_hash text NOT NULL,
-  role_key text NOT NULL,
-  is_active boolean NOT NULL DEFAULT true,
-  totp_secret_encrypted text,
-  created_at timestamptz NOT NULL DEFAULT now()
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), email citext UNIQUE NOT NULL, full_name text NOT NULL, password_hash text NOT NULL,
+ role text NOT NULL CHECK(role IN ('SUPER_ADMIN','ADMIN','SUPPORT','TECHNICIAN','FINANCE')), totp_secret_enc bytea, totp_enabled boolean NOT NULL DEFAULT false,
+ status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','DISABLED')), last_login_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS catalog_plans (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  code text NOT NULL UNIQUE,
-  name text NOT NULL,
-  description text,
-  protocol text NOT NULL CHECK (protocol IN ('vless', 'vmess', 'mixed')),
-  duration_days integer NOT NULL CHECK (duration_days > 0),
-  price_minor bigint NOT NULL CHECK (price_minor >= 0),
-  currency char(3) NOT NULL DEFAULT 'EGP',
-  is_published boolean NOT NULL DEFAULT false,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS auth_sessions (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), principal_type text NOT NULL CHECK(principal_type IN ('CUSTOMER','STAFF')), principal_id uuid NOT NULL,
+ token_hash bytea UNIQUE NOT NULL, csrf_hash bytea NOT NULL, ip inet, user_agent text, created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL, revoked_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS auth_sessions_principal_idx ON auth_sessions(principal_type,principal_id);
+
+CREATE TABLE IF NOT EXISTS auth_tokens (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), principal_type text NOT NULL CHECK(principal_type IN ('CUSTOMER','STAFF')), principal_id uuid NOT NULL,
+ purpose text NOT NULL CHECK(purpose IN ('EMAIL_VERIFY','PASSWORD_RESET','INVITE')), token_hash bytea UNIQUE NOT NULL, expires_at timestamptz NOT NULL, used_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS service_servers (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text NOT NULL,
-  provider_key text NOT NULL,
-  base_url text NOT NULL,
-  status text NOT NULL DEFAULT 'unknown',
-  last_healthcheck_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS provider_instances (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), type text NOT NULL CHECK(type='MARZBAN'), name text UNIQUE NOT NULL, base_url text NOT NULL, credentials_ref text NOT NULL DEFAULT 'MARZBAN_ADMIN', api_version text,
+ status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','DISABLED')), last_ok_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS hosts (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, address text NOT NULL, country char(2) NOT NULL DEFAULT 'EG', city text, region text, hosting_provider text,
+ provider_instance_id uuid NOT NULL REFERENCES provider_instances(id), provider_node_ref text, status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','MAINTENANCE','DISABLED','DECOMMISSIONED')),
+ health_status text NOT NULL DEFAULT 'UNKNOWN' CHECK(health_status IN ('HEALTHY','DEGRADED','DOWN','UNKNOWN')), cpu_pct numeric(5,2), ram_pct numeric(5,2), metrics_at timestamptz, last_health_check_at timestamptz, notes text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS hosts_live_address_uq ON hosts(address) WHERE status <> 'DECOMMISSIONED';
+CREATE TABLE IF NOT EXISTS server_endpoints (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), public_code text UNIQUE NOT NULL DEFAULT ('SRV-'||lpad(nextval('endpoint_code_seq')::text,6,'0')), host_id uuid NOT NULL REFERENCES hosts(id), name text NOT NULL,
+ port integer NOT NULL CHECK(port BETWEEN 1 AND 65535), protocol text NOT NULL CHECK(protocol IN ('vless','vmess')), transport text, security text, provider_inbound_tag text NOT NULL, public_params jsonb NOT NULL DEFAULT '{}',
+ status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','DRAINING','MAINTENANCE','DISABLED')), health_status text NOT NULL DEFAULT 'UNKNOWN' CHECK(health_status IN ('HEALTHY','DEGRADED','DOWN','UNKNOWN')),
+ last_health_check_at timestamptz, max_services integer NOT NULL CHECK(max_services>=0), allocated_count integer NOT NULL DEFAULT 0 CHECK(allocated_count>=0), weight integer NOT NULL DEFAULT 100 CHECK(weight>0), description text,
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(host_id,port)
+);
+
+CREATE TABLE IF NOT EXISTS config_categories (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, slug text UNIQUE NOT NULL, description text, protocol text NOT NULL CHECK(protocol IN ('vless','vmess')),
+ router_compatible boolean NOT NULL DEFAULT true, link_visibility text NOT NULL DEFAULT 'STANDALONE_ONLY' CHECK(link_visibility IN ('ALWAYS','STANDALONE_ONLY','NEVER')),
+ status text NOT NULL DEFAULT 'DRAFT' CHECK(status IN ('DRAFT','ACTIVE','INACTIVE')), display_order integer NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS category_endpoints (
+ category_id uuid NOT NULL REFERENCES config_categories(id) ON DELETE CASCADE, endpoint_id uuid NOT NULL REFERENCES server_endpoints(id) ON DELETE CASCADE, status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','DISABLED')), priority integer NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(category_id,endpoint_id)
+);
+CREATE TABLE IF NOT EXISTS config_plans (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), category_id uuid NOT NULL REFERENCES config_categories(id), name text NOT NULL, duration_days integer NOT NULL CHECK(duration_days>0), price_minor bigint NOT NULL CHECK(price_minor>=0), currency char(3) NOT NULL DEFAULT 'EGP', quota_bytes bigint,
+ status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','INACTIVE')), created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(category_id,name)
+);
+CREATE TABLE IF NOT EXISTS router_products (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), sku text UNIQUE NOT NULL, name text NOT NULL, model text NOT NULL, price_minor bigint NOT NULL CHECK(price_minor>=0), currency char(3) NOT NULL DEFAULT 'EGP'), status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','INACTIVE')), created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS routers (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  customer_id uuid REFERENCES customers(id) ON DELETE SET NULL,
-  name text NOT NULL,
-  platform text NOT NULL DEFAULT 'openwrt',
-  tailscale_node_key text,
-  status router_status NOT NULL DEFAULT 'pending',
-  last_seen_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), public_code text UNIQUE NOT NULL DEFAULT ('RTR-'||lpad(nextval('router_code_seq')::text,6,'0')), customer_id uuid REFERENCES customers(id), product_id uuid REFERENCES router_products(id), serial_number text UNIQUE NOT NULL,
+ device_identifier text UNIQUE, model text NOT NULL, hardware_revision text, openwrt_version text, firmware_version text, manager_version text, sing_box_version text,
+ lifecycle_status text NOT NULL DEFAULT 'IN_STOCK' CHECK(lifecycle_status IN ('IN_STOCK','ASSIGNED','PROVISIONING','READY','REPLACED','DECOMMISSIONED')), decommission_reason text,
+ replaced_by_router_id uuid REFERENCES routers(id), connectivity text NOT NULL DEFAULT 'UNKNOWN' CHECK(connectivity IN ('ONLINE','OFFLINE','UNKNOWN')), last_seen_at timestamptz, desired_config_version integer NOT NULL DEFAULT 0, applied_config_version integer NOT NULL DEFAULT 0,
+ last_apply_status text, last_apply_at timestamptz, last_error text, shipped_at timestamptz, first_online_at timestamptz, notes text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS routers_customer_idx ON routers(customer_id);
+CREATE TABLE IF NOT EXISTS tailscale_devices (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tailscale_node_id text UNIQUE NOT NULL, hostname text NOT NULL, tailscale_ips text[] NOT NULL DEFAULT '{}', os text, tags text[] NOT NULL DEFAULT '{}',
+ status text NOT NULL DEFAULT 'NEW' CHECK(status IN ('NEW','LINKED','IGNORED','REMOVED')), router_id uuid UNIQUE REFERENCES routers(id), online boolean NOT NULL DEFAULT false, first_seen_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz, key_expiry_at timestamptz, raw jsonb, updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS router_replacements (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), customer_id uuid NOT NULL REFERENCES customers(id), old_router_id uuid NOT NULL REFERENCES routers(id), new_router_id uuid REFERENCES routers(id), status text NOT NULL DEFAULT 'REQUESTED' CHECK(status IN ('REQUESTED','APPROVED','PROVISIONING','COMPLETED','REJECTED','CANCELLED')),
+ reason text, rotate_credentials boolean NOT NULL DEFAULT true, requested_by_type text NOT NULL CHECK(requested_by_type IN ('CUSTOMER','STAFF')), requested_by_id uuid NOT NULL, billing_order_id uuid, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz
 );
 
-CREATE TABLE IF NOT EXISTS customer_services (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  customer_id uuid NOT NULL REFERENCES customers(id),
-  plan_id uuid NOT NULL REFERENCES catalog_plans(id),
-  server_id uuid REFERENCES service_servers(id),
-  status service_status NOT NULL DEFAULT 'pending',
-  starts_at timestamptz,
-  expires_at timestamptz,
-  provider_user_id text,
-  created_at timestamptz NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS services (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), public_code text UNIQUE NOT NULL DEFAULT ('SV-'||lpad(nextval('service_code_seq')::text,6,'0')), customer_id uuid NOT NULL REFERENCES customers(id), category_id uuid NOT NULL REFERENCES config_categories(id), plan_id uuid NOT NULL REFERENCES config_plans(id), router_id uuid REFERENCES routers(id), label text,
+ status text NOT NULL DEFAULT 'PROVISIONING' CHECK(status IN ('PROVISIONING','ACTIVE','SUSPENDED','FAILED','TERMINATED')), suspend_reason text, origin_order_item_id uuid UNIQUE, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), terminated_at timestamptz
 );
+CREATE UNIQUE INDEX IF NOT EXISTS services_one_live_per_router_uq ON services(router_id) WHERE router_id IS NOT NULL AND status IN ('PROVISIONING','ACTIVE','SUSPENDED');
+CREATE TABLE IF NOT EXISTS configs (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), public_code text UNIQUE NOT NULL DEFAULT ('CFG-'||lpad(nextval('config_code_seq')::text,6,'0')), service_id uuid NOT NULL REFERENCES services(id), version integer NOT NULL,
+ status text NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','CURRENT','SUPERSEDED','REVOKED')), protocol text NOT NULL, transport text, security text, client_credential_enc bytea NOT NULL, credential_key_id text NOT NULL, params jsonb NOT NULL DEFAULT '{}', created_at timestamptz NOT NULL DEFAULT now(), superseded_at timestamptz, UNIQUE(service_id,version)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS configs_one_current_uq ON configs(service_id) WHERE status='CURRENT';
+CREATE TABLE IF NOT EXISTS proxy_accounts (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), service_id uuid NOT NULL REFERENCES services(id), provider_instance_id uuid NOT NULL REFERENCES provider_instances(id), external_username text NOT NULL, external_ref text, status text NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','ACTIVE','DISABLED','DELETED','ERROR')), external_expire_at timestamptz, last_synced_at timestamptz, last_error text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(provider_instance_id,external_username)
+);
+CREATE TABLE IF NOT EXISTS service_allocations (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), service_id uuid NOT NULL REFERENCES services(id), endpoint_id uuid NOT NULL REFERENCES server_endpoints(id), proxy_account_id uuid REFERENCES proxy_accounts(id), status text NOT NULL DEFAULT 'RESERVED' CHECK(status IN ('RESERVED','PROVISIONING','ACTIVE','RETIRING','RETIRED','FAILED')),
+ reason text NOT NULL CHECK(reason IN ('INITIAL','MIGRATION')), supersedes_id uuid REFERENCES service_allocations(id), note text, failed_reason text, created_by_type text NOT NULL CHECK(created_by_type IN ('STAFF','SYSTEM')), created_by_id uuid, created_at timestamptz NOT NULL DEFAULT now(), activated_at timestamptz, retired_at timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS alloc_one_active_uq ON service_allocations(service_id) WHERE status='ACTIVE';
+CREATE UNIQUE INDEX IF NOT EXISTS alloc_one_pending_uq ON service_allocations(service_id) WHERE status IN ('RESERVED','PROVISIONING');
+CREATE TABLE IF NOT EXISTS subscriptions (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), public_code text UNIQUE NOT NULL DEFAULT ('SUB-'||lpad(nextval('subscription_code_seq')::text,6,'0')), service_id uuid UNIQUE NOT NULL REFERENCES services(id), plan_id uuid NOT NULL REFERENCES config_plans(id),
+ status text NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','ACTIVE','EXPIRED','CANCELLED')), starts_at timestamptz, current_period_end timestamptz, grace_until timestamptz, quota_bytes bigint, used_bytes bigint NOT NULL DEFAULT 0, usage_synced_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS subscription_periods (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), subscription_id uuid NOT NULL REFERENCES subscriptions(id), order_item_id uuid, source text NOT NULL CHECK(source IN ('ORDER','ADMIN_GRANT')), starts_at timestamptz NOT NULL, ends_at timestamptz NOT NULL, quota_bytes bigint, created_by_staff_id uuid REFERENCES staff_users(id), created_at timestamptz NOT NULL DEFAULT now(), CHECK(ends_at>starts_at)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS subscription_periods_item_uq ON subscription_periods(order_item_id) WHERE order_item_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS orders (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  customer_id uuid NOT NULL REFERENCES customers(id),
-  status text NOT NULL DEFAULT 'pending',
-  currency char(3) NOT NULL DEFAULT 'EGP',
-  total_minor bigint NOT NULL CHECK (total_minor >= 0),
-  created_at timestamptz NOT NULL DEFAULT now()
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), public_code text UNIQUE NOT NULL DEFAULT ('ORD-'||lpad(nextval('order_code_seq')::text,6,'0')), customer_id uuid NOT NULL REFERENCES customers(id), status text NOT NULL DEFAULT 'PENDING_PAYMENT' CHECK(status IN ('PENDING_PAYMENT','PAID','FULFILLING','COMPLETED','CANCELLED','REFUNDED')),
+ currency char(3) NOT NULL DEFAULT 'EGP', subtotal_minor bigint NOT NULL CHECK(subtotal_minor>=0), discount_minor bigint NOT NULL DEFAULT 0 CHECK(discount_minor>=0), total_minor bigint NOT NULL CHECK(total_minor>=0), idempotency_key text, placed_at timestamptz NOT NULL DEFAULT now(), paid_at timestamptz, completed_at timestamptz, cancelled_at timestamptz, notes text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(customer_id,idempotency_key)
 );
-
+CREATE TABLE IF NOT EXISTS order_items (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_id uuid NOT NULL REFERENCES orders(id), item_type text NOT NULL CHECK(item_type IN ('ROUTER','CONFIG_NEW','CONFIG_RENEWAL')), router_product_id uuid REFERENCES router_products(id), plan_id uuid REFERENCES config_plans(id), target_service_id uuid REFERENCES services(id), attach_to_item_id uuid REFERENCES order_items(id), use_with_router boolean NOT NULL DEFAULT false, name_snapshot text NOT NULL, unit_price_minor bigint NOT NULL CHECK(unit_price_minor>=0), fulfillment_status text NOT NULL DEFAULT 'PENDING' CHECK(fulfillment_status IN ('PENDING','IN_PROGRESS','NEEDS_ATTENTION','FULFILLED','CANCELLED')), fulfillment_detail text, result_service_id uuid REFERENCES services(id), result_router_id uuid REFERENCES routers(id), fulfilled_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS payments (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  order_id uuid NOT NULL REFERENCES orders(id),
-  provider_key text NOT NULL,
-  provider_reference text,
-  status text NOT NULL DEFAULT 'pending',
-  amount_minor bigint NOT NULL CHECK (amount_minor >= 0),
-  currency char(3) NOT NULL DEFAULT 'EGP',
-  verified_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_id uuid NOT NULL REFERENCES orders(id), gateway text NOT NULL, gateway_txn_id text, method text, amount_minor bigint NOT NULL CHECK(amount_minor>0), currency char(3) NOT NULL, status text NOT NULL DEFAULT 'INITIATED' CHECK(status IN ('INITIATED','SUCCEEDED','FAILED','CANCELLED')), refunded_minor bigint NOT NULL DEFAULT 0 CHECK(refunded_minor>=0), recorded_by_staff_id uuid REFERENCES staff_users(id), raw jsonb, paid_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), CHECK(refunded_minor<=amount_minor)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS payments_gateway_txn_uq ON payments(gateway,gateway_txn_id) WHERE gateway_txn_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS payment_events (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), gateway text NOT NULL, event_id text NOT NULL, payment_id uuid REFERENCES payments(id), payload jsonb NOT NULL, received_at timestamptz NOT NULL DEFAULT now(), processed_at timestamptz, result text, UNIQUE(gateway,event_id)
+);
+CREATE TABLE IF NOT EXISTS refunds (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), payment_id uuid NOT NULL REFERENCES payments(id), amount_minor bigint NOT NULL CHECK(amount_minor>0), reason text, status text NOT NULL DEFAULT 'REQUESTED' CHECK(status IN ('REQUESTED','COMPLETED','FAILED')), gateway_refund_id text, created_by_staff_id uuid NOT NULL REFERENCES staff_users(id), created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  type text NOT NULL,
-  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-  status job_status NOT NULL DEFAULT 'queued',
-  attempts integer NOT NULL DEFAULT 0,
-  available_at timestamptz NOT NULL DEFAULT now(),
-  locked_at timestamptz,
-  last_error text,
-  created_at timestamptz NOT NULL DEFAULT now()
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), type text NOT NULL, key text UNIQUE NOT NULL, subject_type text, subject_id uuid, payload jsonb NOT NULL DEFAULT '{}', state text NOT NULL DEFAULT 'QUEUED' CHECK(state IN ('QUEUED','RUNNING','SUCCEEDED','NEEDS_ATTENTION','CANCELLED')), attempts integer NOT NULL DEFAULT 0, max_attempts integer NOT NULL DEFAULT 8, run_at timestamptz NOT NULL DEFAULT now(), locked_at timestamptz, locked_by text, last_error text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
 );
-
-CREATE TABLE IF NOT EXISTS audit_events (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  actor_type text NOT NULL,
-  actor_id uuid,
-  action text NOT NULL,
-  resource_type text NOT NULL,
-  resource_id text,
-  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-  request_id text,
-  created_at timestamptz NOT NULL DEFAULT now()
+CREATE INDEX IF NOT EXISTS jobs_due_idx ON jobs(run_at) WHERE state='QUEUED';
+CREATE TABLE IF NOT EXISTS audit_logs (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, occurred_at timestamptz NOT NULL DEFAULT now(), actor_type text NOT NULL CHECK(actor_type IN ('STAFF','CUSTOMER','SYSTEM')), actor_id uuid, action text NOT NULL, entity_type text NOT NULL, entity_id uuid, customer_id uuid, request_id text, ip inet, metadata jsonb NOT NULL DEFAULT '{}'
 );
+CREATE INDEX IF NOT EXISTS audit_entity_idx ON audit_logs(entity_type,entity_id,occurred_at DESC);
+CREATE INDEX IF NOT EXISTS audit_customer_idx ON audit_logs(customer_id,occurred_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_customer_services_customer_status ON customer_services(customer_id, status);
-CREATE INDEX IF NOT EXISTS idx_routers_customer ON routers(customer_id);
-CREATE INDEX IF NOT EXISTS idx_orders_customer_created ON orders(customer_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_jobs_claimable ON jobs(status, available_at) WHERE status = 'queued';
-CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at DESC);
+CREATE TABLE IF NOT EXISTS app_settings (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+
+INSERT INTO app_settings(key,value) VALUES
+ ('grace_period_days','3'),('retention_days','30'),('provisioning_alert_hours','24'),('notifications','{"email":true}')
+ON CONFLICT(key) DO NOTHING;
+
+-- The application role must be granted only the minimum required rights in production.
