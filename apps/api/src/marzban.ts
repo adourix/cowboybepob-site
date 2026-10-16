@@ -1,16 +1,57 @@
+import { Pool } from 'pg';
+import crypto from 'node:crypto';
+
 export type MarzbanUser = { username:string; status?:string; expire?:number; data_limit?:number; used_traffic?:number; subscription_url?:string; links?:string[]; proxies?:Record<string,unknown>; inbounds?:Record<string,string[]> };
+
+type ProviderSecret = { username:string; password:string };
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const encryptionKey = process.env.ENCRYPTION_KEY || '';
+
+function decryptSecret(value:Buffer){
+ if(!encryptionKey) throw new Error('ENCRYPTION_KEY_NOT_CONFIGURED');
+ const key=crypto.createHash('sha256').update(encryptionKey).digest();
+ const iv=value.subarray(0,12), tag=value.subarray(12,28), data=value.subarray(28);
+ const decipher=crypto.createDecipheriv('aes-256-gcm',key,iv);
+ decipher.setAuthTag(tag);
+ return Buffer.concat([decipher.update(data),decipher.final()]).toString('utf8');
+}
+
+async function resolveProviderSecret(baseUrl:string, username?:string, password?:string):Promise<ProviderSecret>{
+ if(username && password) return {username,password};
+ const r=await pool.query(`SELECT credentials_enc FROM provider_instances WHERE base_url=$1 AND status='ACTIVE' ORDER BY created_at LIMIT 1`,[baseUrl]);
+ if(!r.rowCount || !r.rows[0].credentials_enc) throw new Error(`MARZBAN_PROVIDER_CREDENTIALS_NOT_CONFIGURED:${baseUrl}`);
+ let parsed:ProviderSecret;
+ try { parsed=JSON.parse(decryptSecret(r.rows[0].credentials_enc)) as ProviderSecret; }
+ catch { throw new Error(`MARZBAN_PROVIDER_CREDENTIALS_INVALID:${baseUrl}`); }
+ if(!parsed.username || !parsed.password) throw new Error(`MARZBAN_PROVIDER_CREDENTIALS_INVALID:${baseUrl}`);
+ return parsed;
+}
 
 export class MarzbanProvider {
  private token=''; private tokenExpires=0;
- constructor(private readonly baseUrl:string, private readonly username:string, private readonly password:string) {}
+ private resolved?:ProviderSecret;
+ constructor(private readonly baseUrl:string, private readonly username='', private readonly password='') {}
  private async auth(){
   if(this.token && Date.now()<this.tokenExpires)return;
-  const body=new URLSearchParams({username:this.username,password:this.password,grant_type:'password'});
+  this.resolved=this.resolved || await resolveProviderSecret(this.baseUrl,this.username,this.password);
+  const body=new URLSearchParams({username:this.resolved.username,password:this.resolved.password,grant_type:'password'});
   const r=await fetch(`${this.baseUrl.replace(/\/$/,'')}/api/admin/token`,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body});
   if(!r.ok)throw new Error(`Marzban authentication failed (${r.status})`);
-  const data=await r.json() as {access_token:string};this.token=data.access_token;this.tokenExpires=Date.now()+20*60*1000;
+  const data=await r.json() as {access_token:string};
+  this.token=data.access_token;
+  this.tokenExpires=Date.now()+20*60*1000;
  }
- private async request(path:string,init:RequestInit={},retry=true):Promise<any>{await this.auth();const headers=new Headers(init.headers);headers.set('Authorization',`Bearer ${this.token}`);headers.set('content-type','application/json');const r=await fetch(`${this.baseUrl.replace(/\/$/,'')}${path}`,{...init,headers});if(r.status===401&&retry){this.token='';return this.request(path,init,false)};if(!r.ok){const text=await r.text();throw Object.assign(new Error(`Marzban ${r.status}: ${text.slice(0,300)}`),{status:r.status})};return r.status===204?null:r.json()}
+ private async request(path:string,init:RequestInit={},retry=true):Promise<any>{
+  await this.auth();
+  const headers=new Headers(init.headers);
+  headers.set('Authorization',`Bearer ${this.token}`);
+  headers.set('content-type','application/json');
+  const r=await fetch(`${this.baseUrl.replace(/\/$/,'')}${path}`,{...init,headers});
+  if(r.status===401&&retry){this.token='';return this.request(path,init,false)}
+  if(!r.ok){const text=await r.text();throw Object.assign(new Error(`Marzban ${r.status}: ${text.slice(0,300)}`),{status:r.status})}
+  return r.status===204?null:r.json();
+ }
  async getUser(username:string){try{return await this.request(`/api/user/${encodeURIComponent(username)}`) as MarzbanUser}catch(e:any){if(e.status===404)return null;throw e}}
  async createOrUpdate(input:{username:string;uuid:string;inbound:string;expireAt:Date;quotaBytes?:number|null;protocol:'vless'|'vmess';flow?:string}){
   const existing=await this.getUser(input.username);
