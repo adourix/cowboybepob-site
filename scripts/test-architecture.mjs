@@ -22,8 +22,8 @@ const requiredTables = [
 for (const table of requiredTables) contains(schema, `CREATE TABLE IF NOT EXISTS ${table}(`, `missing table: ${table}`);
 
 const requiredRoutes = [
-  "'/api/v1/auth/login'","'/api/v1/auth/logout'","'/api/v1/customer/profile'",
-  "'/catalog/categories'","'/services'","'/services/:id/config'","'/services/:id/renew'",
+  "'/api/v1/auth/login'","'/api/v1/auth/logout'","'/api/v1/customer/auth/register'",
+  "'/api/v1/customer/catalog/categories'","'/api/v1/customer/services'","'/services/:id/config'","'/services/:id/renew'",
   "'/routers/:id/replacement-requests'","'/orders'","'/orders/:id/pay'",
   "'/dashboard'","'/customers'","'/services'","'/routers'","'/servers'",
   "'/catalog'","'/orders'","'/payments'","'/jobs'","'/audit-logs'"
