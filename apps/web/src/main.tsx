@@ -2,8 +2,8 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import {
-  Activity, ArrowDownLeft, ArrowUpLeft, Bell, Boxes, CircleHelp, CreditCard,
-  Gauge, Globe2, HardDrive, LayoutGrid, LogOut, Menu, Network, Package,
+  Activity, ArrowDownLeft, ArrowUpLeft, Bell, CircleHelp, CreditCard,
+  Gauge, Globe2, HardDrive, LayoutGrid, LogOut, Network, Package,
   Search, Settings, ShieldCheck, ShoppingCart, Users, Wifi, Workflow
 } from "lucide-react";
 import "./styles.css";
@@ -100,7 +100,7 @@ function DataPage({path}:{path:string}) {
   const title = pageTitles[path] || "العناصر";
   const rows = sampleRows[path];
   const headers = columnHeaders[path];
-  return <><div className="page-heading"><div><div className="eyebrow">إدارة المنصة</div><h1>{title}</h1><p>عرض ومتابعة وإدارة {title.toLowerCase()} من مكان واحد.</p></div><button className="primary-button"><span>＋</span> إضافة جديد</button></div><div className="metric-strip"><div><span>إجمالي السجلات</span><strong>{path === "/admin/routers" ? "92" : path === "/admin/customers" ? "1,284" : "248"}</strong></div><div><span>نشطة / مكتملة</span><strong className="green-text">86</strong></div><div><span>تحتاج مراجعة</span><strong className="amber-text">6</strong></div></div><section className="panel data-panel"><div className="table-toolbar"><label className="search"><Search size={16}/><input placeholder={"ابحث في "+title+"..."} /></label><button className="outline-button">كل الحالات⌄</button><button className="outline-button">تصدير <ArrowUpLeft size={14}/></button></div><div className="table-wrap"><table><thead><tr>{headers.map(h=><th key={h}>{h}</th>)}<th>إجراءات</th></tr></thead><tbody>{rows.map((row,i)=><tr key={row[0]}>{row.map((cell,j)=><td key={j}>{j === row.length-2 || j === row.length-1 ? <span className={"pill "+( /نشط|مفعّلة|متصل|سليم|منشورة|مكتمل|اكتملت|مقبول/.test(cell)?"success":/معلّق|تحذير|مراجعة|قيد التنفيذ|مسودة|بانتظار/.test(cell)?"pending":"neutral")}>{cell}</span>:cell}</td>)}<td><button className="row-menu" aria-label="خيارات">•••</button></td></tr>)}</tbody></table></div><div className="table-footer"><span>عرض {rows.length} من {path === "/admin/customers" ? "1,284" : "248"} سجلًا (بيانات تجريبية)</span><div><button disabled>السابق</button><button className="page-number">1</button><button>2</button><button>التالي</button></div></div></section></>;
+  return <><div className="page-heading"><div><div className="eyebrow">إدارة المنصة</div><h1>{title}</h1><p>عرض ومتابعة وإدارة {title.toLowerCase()} من مكان واحد.</p></div><button className="primary-button"><span>＋</span> إضافة جديد</button></div><div className="metric-strip"><div><span>إجمالي السجلات</span><strong>{path === "/admin/routers" ? "92" : path === "/admin/customers" ? "1,284" : "248"}</strong></div><div><span>نشطة / مكتملة</span><strong className="green-text">86</strong></div><div><span>تحتاج مراجعة</span><strong className="amber-text">6</strong></div></div><section className="panel data-panel"><div className="table-toolbar"><label className="search"><Search size={16}/><input placeholder={"ابحث في "+title+"..."} /></label><button className="outline-button">كل الحالات⌄</button><button className="outline-button">تصدير <ArrowUpLeft size={14}/></button></div><div className="table-wrap"><table><thead><tr>{headers.map(h=><th key={h}>{h}</th>)}<th>إجراءات</th></tr></thead><tbody>{rows.map((row)=><tr key={row[0]}>{row.map((cell,j)=><td key={j}>{j === row.length-2 || j === row.length-1 ? <span className={"pill "+( /نشط|مفعّلة|متصل|سليم|منشورة|مكتمل|اكتملت|مقبول/.test(cell)?"success":/معلّق|تحذير|مراجعة|قيد التنفيذ|مسودة|بانتظار/.test(cell)?"pending":"neutral")}>{cell}</span>:cell}</td>)}<td><button className="row-menu" aria-label="خيارات">•••</button></td></tr>)}</tbody></table></div><div className="table-footer"><span>عرض {rows.length} من {path === "/admin/customers" ? "1,284" : "248"} سجلًا (بيانات تجريبية)</span><div><button disabled>السابق</button><button className="page-number">1</button><button>2</button><button>التالي</button></div></div></section></>;
 }
 
 function CustomerPortal() {
@@ -108,10 +108,6 @@ function CustomerPortal() {
 }
 
 function App() {
-  const location = useLocation();
-  const isCustomer = location.pathname.startsWith("/customer");
-  const path = location.pathname;
-  const activePath = path === "/admin/settings" ? "/admin" : path;
   return <div className="app-shell"><Sidebar/><main className="main-area"><Topbar/><div className="page-content"><Routes><Route path="/admin" element={<Dashboard/>}/><Route path="/admin/customers" element={<DataPage path="/admin/customers"/>}/><Route path="/admin/services" element={<DataPage path="/admin/services"/>}/><Route path="/admin/routers" element={<DataPage path="/admin/routers"/>}/><Route path="/admin/servers" element={<DataPage path="/admin/servers"/>}/><Route path="/admin/catalog" element={<DataPage path="/admin/catalog"/>}/><Route path="/admin/orders" element={<DataPage path="/admin/orders"/>}/><Route path="/admin/payments" element={<DataPage path="/admin/payments"/>}/><Route path="/admin/jobs" element={<DataPage path="/admin/jobs"/>}/><Route path="/admin/audit" element={<DataPage path="/admin/audit"/>}/><Route path="/customer" element={<CustomerPortal/>}/><Route path="/customer/services" element={<CustomerPortal/>}/><Route path="/customer/routers" element={<CustomerPortal/>}/><Route path="/admin/settings" element={<div className="empty-state"><Settings size={28}/><h1>الإعدادات</h1><p>سيتم تنفيذ إعدادات الحساب والصلاحيات في مرحلة المصادقة.</p></div>}/><Route path="*" element={<Dashboard/>}/></Routes></div><footer className="footer"><span>© 2026 CowboyBepob Platform</span><span>الإصدار 0.1.0 · واجهة أولية</span></footer></main></div>;
 }
 
