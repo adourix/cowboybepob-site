@@ -5,9 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=cowboybepob
-Group=cowboybepob
+User=abdulrahman
+Group=abdulrahman
 WorkingDirectory=/home/abdulrahman/projects/cowboybepob
+Environment=HOME=/home/abdulrahman
+Environment=NODE_ENV=production
 EnvironmentFile=/home/abdulrahman/projects/cowboybepob/.env
 ExecStart=/usr/bin/npm run start:worker
 Restart=always
