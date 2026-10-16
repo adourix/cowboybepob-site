@@ -1,31 +1,58 @@
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: cowboybepob
       POSTGRES_USER: cowboybepob
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_dev_only}
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cowboybepob -d cowboybepob"]
+      test: ["CMD-SHELL","pg_isready -U cowboybepob -d cowboybepob"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 15
 
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
     environment:
+      NODE_ENV: production
       PORT: 4000
-      DATABASE_URL: postgres://cowboybepob:${POSTGRES_PASSWORD:-local_dev_only}@db:5432/cowboybepob
-      CORS_ORIGIN: http://localhost:5173
+      DATABASE_URL: postgres://cowboybepob:${POSTGRES_PASSWORD:-change-me}@db:5432/cowboybepob
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SESSION_DAYS: ${SESSION_DAYS:-7}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?set ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+      ADMIN_TOTP_SECRET: ${ADMIN_TOTP_SECRET:?set ADMIN_TOTP_SECRET}
+      MARZBAN_BASE_URL: ${MARZBAN_BASE_URL:-}
+      MARZBAN_USERNAME: ${MARZBAN_USERNAME:-}
+      MARZBAN_PASSWORD: ${MARZBAN_PASSWORD:-}
     ports:
       - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    command: ["npm","run","worker"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://cowboybepob:${POSTGRES_PASSWORD:-change-me}@db:5432/cowboybepob
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
+      MARZBAN_BASE_URL: ${MARZBAN_BASE_URL:-}
+      MARZBAN_USERNAME: ${MARZBAN_USERNAME:-}
+      MARZBAN_PASSWORD: ${MARZBAN_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy
@@ -34,6 +61,9 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
+    restart: unless-stopped
     ports:
       - "5173:80"
     depends_on:
