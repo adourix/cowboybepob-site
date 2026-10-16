@@ -1,135 +1,85 @@
-# CowboyBepob Platform
+# CowboyBepob Platform — Native MVP
 
-منصة MVP لبيع وإدارة خدمات Proxy/Subscriptions وأجهزة OpenWrt، مبنية على `SITE_ARCHITECTURE.md`.
+منصة MVP لإدارة وبيع خدمات Proxy/Subscriptions والراوترات، مبنية على `SITE_ARCHITECTURE.md` وتعمل **Native على Ubuntu/Debian بدون Docker**.
 
-**النشر الأساسي هنا Native على Ubuntu/Debian، بدون Docker أو Containers.**
+## منافذ التشغيل
 
-## ما يغطيه الـMVP
+- `5001` — Nginx / الموقع العام
+- `5002` — Fastify API على `127.0.0.1`
+- `5003` — Vite أثناء التطوير
+- `5432` — PostgreSQL
+- `8000` — Marzban حسب إعدادك
 
-- Admin panel وCustomer portal باللغة العربية وRTL.
-- Customer/Staff authentication، sessions، CSRF، Argon2id، وTOTP للموظفين.
-- RBAC للأدوار: SUPER_ADMIN / ADMIN / SUPPORT / TECHNICIAN / FINANCE.
-- PostgreSQL كمصدر الحقيقة للـbusiness state.
-- Catalog: categories + plans + router products.
-- Customers، services، subscriptions، configs، allocations.
-- Orders + manual payment foundation + payment events.
-- DB-backed jobs/worker باستخدام `FOR UPDATE SKIP LOCKED`.
-- Marzban adapter للـprovisioning والـusage/health.
-- Routers + Tailscale data model وواجهات الإدارة الأساسية.
+## MVP الموجود
+
+- Admin Panel وCustomer Portal بالعربية وRTL.
+- Staff/Customer authentication، Argon2id، sessions، CSRF، TOTP وRBAC.
+- PostgreSQL business state.
+- Catalog: categories / plans / router products.
+- Customers / services / configs / subscriptions / allocations.
+- Orders مع `Idempotency-Key`.
+- Manual payments + payment events/webhook foundation.
+- DB worker مع `FOR UPDATE SKIP LOCKED` وretry/backoff.
+- Marzban provisioning adapter.
+- Router inventory/lifecycle.
+- Server hosts/endpoints.
 - Audit log.
-- Nginx same-origin: `/` للواجهة و`/api` للـAPI.
-- systemd لخدمتي API وWorker.
+- Nginx + systemd native deployment.
 
-الـArchitecture نفسه يحدد أن التطبيق DB هو مصدر الحقيقة، بينما Marzban يحتفظ بالمستخدمين والحالة التشغيلية، وأن Tailscale قناة إدارة فقط للراوترات. fileciteturn234file0L50-L105
+## المؤجل خارج MVP
 
-## البنية
+- Tailscale API/OAuth وربط الأجهزة الحقيقي.
+- RouterGateway / `cb-remote` وتطبيق إعدادات OpenWrt فعليًا.
+- Payment gateway تجاري كامل.
+- Monitoring/Prometheus/Grafana.
+- Firmware fleet management.
+- Automatic migration/load-aware balancing.
+- Versioned DB migrations.
+- Full refund/reconciliation workflows.
 
-```text
-Browser
-   │
-   ▼
- Nginx :80/443
-   ├── /              → apps/web/dist
-   └── /api/*         → 127.0.0.1:4000
-                            │
-                            ▼
-                       Fastify API
-                            │
-                            ▼
-                       PostgreSQL
-                            ▲
-                            │
-                    systemd Worker
-                            │
-                  ┌─────────┴─────────┐
-                  ▼                   ▼
-               Marzban            Tailscale
-```
-
-## متطلبات السيرفر
-
-- Ubuntu 22.04/24.04 أو Debian حديث.
-- Node.js 20+ وnpm.
-- PostgreSQL 15+.
-- Nginx.
-- Marzban متاح من السيرفر إذا أردت provisioning حقيقي.
-- Tailscale مطلوب فقط عندما نبدأ إدارة الراوترات فعليًا.
-
-## 1. تثبيت Node.js 20+
-
-إذا كان Node موجودًا:
-
-```bash
-node -v
-npm -v
-```
-
-المطلوب `node >= 20`.
-
-على Ubuntu/Debian يمكن تثبيت Node.js 20 عبر NodeSource:
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-node -v
-npm -v
-```
-
-## 2. PostgreSQL
+## التثبيت
 
 ```bash
 sudo apt update
-sudo apt install -y postgresql postgresql-contrib nginx git build-essential curl ca-certificates
-sudo systemctl enable --now postgresql nginx
+sudo apt install -y git curl ca-certificates build-essential nginx postgresql postgresql-contrib openssl python3
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo mkdir -p /var/www
+sudo git clone https://github.com/adourix/cowboybepob-site.git /var/www/cowboybepob
+cd /var/www/cowboybepob
 ```
 
-أنشئ مستخدم وقاعدة البيانات:
+PostgreSQL:
 
 ```bash
 sudo -u postgres psql
 ```
 
-داخل psql:
-
 ```sql
-CREATE USER cowboybepob WITH PASSWORD 'ضع_كلمة_مرور_قوية_هنا';
+CREATE USER cowboybepob WITH PASSWORD 'CHANGE_THIS_PASSWORD';
 CREATE DATABASE cowboybepob OWNER cowboybepob;
 \q
 ```
 
-ثم طبّق الـschema:
-
 ```bash
-cd /var/www/cowboybepob
-tail -n +1 db/schema.sql | PGPASSWORD='ضع_كلمة_مرور_قوية_هنا' psql -h 127.0.0.1 -U cowboybepob -d cowboybepob
+PGPASSWORD='CHANGE_THIS_PASSWORD' psql -h 127.0.0.1 -U cowboybepob -d cowboybepob -f db/schema.sql
 ```
 
-## 3. تنزيل المشروع
-
-```bash
-sudo mkdir -p /var/www
-sudo git clone https://github.com/adourix/cowboybepob-site.git /var/www/cowboybepob
-sudo chown -R "$USER":"$USER" /var/www/cowboybepob
-cd /var/www/cowboybepob
-```
-
-## 4. Environment
+Environment:
 
 ```bash
 sudo mkdir -p /etc/cowboybepob
 sudo nano /etc/cowboybepob/site.env
 ```
 
-استخدم:
-
 ```env
 NODE_ENV=production
-PORT=4000
-DATABASE_URL=postgres://cowboybepob:DB_PASSWORD@127.0.0.1:5432/cowboybepob
-CORS_ORIGIN=https://panel.example.com
-COOKIE_SECURE=true
+PORT=5002
+DATABASE_URL=postgres://cowboybepob:CHANGE_THIS_PASSWORD@127.0.0.1:5432/cowboybepob
+CORS_ORIGIN=http://SERVER_IP:5001
+COOKIE_SECURE=false
 SESSION_DAYS=7
-ENCRYPTION_KEY=RANDOM_SECRET
+ENCRYPTION_KEY=RANDOM_32_BYTE_SECRET
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=STRONG_ADMIN_PASSWORD
 ADMIN_TOTP_SECRET=BASE32_TOTP_SECRET
@@ -139,200 +89,73 @@ MARZBAN_PASSWORD=MARZBAN_PASSWORD
 VITE_API_URL=/
 ```
 
-توليد الأسرار:
-
-```bash
-openssl rand -hex 32
-python3 -c "import base64,os; print(base64.b32encode(os.urandom(20)).decode().rstrip('='))"
-```
-
-لا تضع `site.env` داخل Git.
-
-## 5. تثبيت Node dependencies وبناء الموقع
-
-```bash
-cd /var/www/cowboybepob
-npm install
-npm run typecheck
-npm run build
-```
-
-## 6. تشغيل الـAPI والـWorker بدون Containers
-
-أنشئ مستخدم الخدمة:
+Build:
 
 ```bash
 sudo useradd --system --create-home --home-dir /var/lib/cowboybepob --shell /usr/sbin/nologin cowboybepob || true
 sudo chown -R cowboybepob:cowboybepob /var/www/cowboybepob
+sudo -u cowboybepob bash -lc 'cd /var/www/cowboybepob && npm install && npm run typecheck && npm run build'
 ```
 
-ثبّت systemd units:
+Install services:
 
 ```bash
 sudo cp deploy/systemd/cowboybepob-api.service /etc/systemd/system/
 sudo cp deploy/systemd/cowboybepob-worker.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now cowboybepob-api cowboybepob-worker
-```
-
-تحقق:
-
-```bash
-sudo systemctl status cowboybepob-api --no-pager
-sudo systemctl status cowboybepob-worker --no-pager
-curl http://127.0.0.1:4000/health
-```
-
-Logs:
-
-```bash
-sudo journalctl -u cowboybepob-api -f
-sudo journalctl -u cowboybepob-worker -f
-```
-
-## 7. Nginx
-
-```bash
 sudo cp deploy/nginx/cowboybepob.conf /etc/nginx/sites-available/cowboybepob.conf
 sudo ln -sfn /etc/nginx/sites-available/cowboybepob.conf /etc/nginx/sites-enabled/cowboybepob.conf
 sudo rm -f /etc/nginx/sites-enabled/default
+sudo systemctl daemon-reload
 sudo nginx -t
-sudo systemctl reload nginx
+sudo systemctl enable --now cowboybepob-api cowboybepob-worker nginx
 ```
 
-الـNginx config يفترض أن الموقع مبني في:
-
-```text
-/var/www/cowboybepob/apps/web/dist
-```
-
-وأن الـAPI يستمع على:
-
-```text
-127.0.0.1:4000
-```
-
-في الإنتاج استخدم domain حقيقي وHTTPS، واضبط `server_name` و`CORS_ORIGIN` accordingly.
-
-## 8. أول دخول Admin
-
-عند أول تشغيل للـAPI، إذا كانت:
-
-```env
-ADMIN_EMAIL
-ADMIN_PASSWORD
-ADMIN_TOTP_SECRET
-```
-
-موجودة، يتم إنشاء `SUPER_ADMIN` مرة واحدة.
-
-بعد ذلك:
-
-```text
-https://panel.example.com/login
-```
-
-وتختار "الموظفون" وتستخدم البريد + كلمة المرور + TOTP.
-
-## 9. تطوير محلي بدون Containers
-
-Terminal 1:
+## التحقق
 
 ```bash
-export DATABASE_URL='postgres://cowboybepob:password@127.0.0.1:5432/cowboybepob'
+curl http://127.0.0.1:5002/health
+curl http://127.0.0.1:5001/health
+curl -I http://127.0.0.1:5001/
+sudo systemctl --no-pager status cowboybepob-api
+sudo systemctl --no-pager status cowboybepob-worker
+sudo nginx -t
+```
+
+## Audit كامل
+
+```bash
+cd /var/www/cowboybepob
+sudo chmod +x deploy/audit-native.sh
+sudo deploy/audit-native.sh
+```
+
+## Logs
+
+```bash
+sudo journalctl -u cowboybepob-api -n 200 --no-pager
+sudo journalctl -u cowboybepob-worker -n 200 --no-pager
+sudo journalctl -u nginx -n 100 --no-pager
+```
+
+## Development بدون Containers
+
+API على `5002`:
+
+```bash
+cd /var/www/cowboybepob
+export DATABASE_URL='postgres://cowboybepob:PASSWORD@127.0.0.1:5432/cowboybepob'
+export PORT=5002
 npm run dev -w @cowboybepob/api
 ```
 
-Terminal 2:
+Web على `5003`:
 
 ```bash
 npm run dev -w @cowboybepob/web
 ```
 
-Vite يمرر `/api` إلى `127.0.0.1:4000`.
+## ملاحظة provisioning
 
-## 10. Marzban
+لكي ينجح تخصيص خدمة، يجب أن يكون هناك `server_endpoint` فعال مرتبط بالفئة عبر `category_endpoints`، وأن يطابق `provider_inbound_tag` الـinbound الحقيقي في Marzban. بدون endpoint مرتبط، الـworker لن يستطيع عمل allocation.
 
-```env
-MARZBAN_BASE_URL=http://127.0.0.1:8000
-MARZBAN_USERNAME=admin
-MARZBAN_PASSWORD=...
-```
-
-الـadapter يستخدم token endpoint ثم user endpoints في Marzban. يجب أن يطابق `provider_inbound_tag` الـinbound الحقيقي في Marzban.
-
-إذا كان Marzban على سيرفر آخر، استخدم عنوانه الشبكي بدل `127.0.0.1`.
-
-## 11. مسار الـMVP
-
-```text
-Customer
-  ↓
-Catalog
-  ↓
-POST Order + Idempotency-Key
-  ↓
-Payment / Manual Payment
-  ↓
-Job QUEUED
-  ↓
-Worker
-  ↓
-Service + Subscription + Allocation + Config
-  ↓
-Marzban provisioning
-  ↓
-ACTIVE
-```
-
-الـarchitecture يشترط إنشاء Service/Subscription/allocation reservation قبل استدعاء provider، وأن استدعاءات Marzban/Tailscale لا تتم داخل transaction HTTP. fileciteturn234file0L28-L46 fileciteturn233file4L327-L360
-
-## 12. نطاق الراوترات في الـMVP
-
-الموديل يدعم:
-
-- Router lifecycle: `IN_STOCK → ASSIGNED → PROVISIONING → READY`.
-- Connectivity منفصلة: `ONLINE/OFFLINE/UNKNOWN`.
-- Router واحد كحد أقصى لكل service في الـMVP.
-- Tailscale device linking.
-- Replacement requests.
-
-هذا متوافق مع التصميم الذي يفصل lifecycle عن connectivity ويضع قاعدة service واحدة لكل router في الـMVP. fileciteturn234file1L262-L341
-
-## 13. ما ليس جزءًا من MVP النهائي
-
-هذه أجزاء مؤجلة في الـarchitecture نفسه أو تحتاج قرارًا/تكاملًا خارجيًا:
-
-- Payment gateway حقيقي بدل manual payment.
-- Tailscale OAuth/API credentials الفعلية وربط أجهزة الإنتاج.
-- RouterGateway الفعلي عبر tailnet و`cb-remote`.
-- Automatic migration/load-aware balancing.
-- Prometheus/Grafana.
-- Firmware fleet management.
-- عدة services على نفس router.
-
-الـarchitecture يضع هذه ضمن المستقبل أو مراحل hardening/integration. fileciteturn233file2L177-L199
-
-## 14. تحديث المشروع
-
-```bash
-cd /var/www/cowboybepob
-git pull --ff-only
-npm install
-npm run typecheck
-npm run build
-sudo systemctl restart cowboybepob-api cowboybepob-worker
-sudo systemctl reload nginx
-```
-
-## 15. فحص كامل
-
-```bash
-curl -f http://127.0.0.1:4000/health
-curl -I http://127.0.0.1/
-sudo systemctl --no-pager --full status cowboybepob-api
-sudo systemctl --no-pager --full status cowboybepob-worker
-sudo nginx -t
-```
-
-لا تحتاج Docker لتشغيل هذا المشروع.
+راجع `docs/IMPLEMENTATION_STATUS.md` قبل اعتبار النظام Production Complete.
