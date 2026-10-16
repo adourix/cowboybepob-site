@@ -1,0 +1,33 @@
+name: Patch customer router catalog
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: "!contains(github.event.head_commit.message, '[router-patch]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Add customer router catalog endpoint
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('apps/api/src/main.ts')
+          s = p.read_text()
+          marker = "  customer.get('/services', async (req:Req) =>"
+          route = "  customer.get('/catalog/router-products', async () => (await db(\"SELECT id,sku,name,model,price_minor,currency,status FROM router_products WHERE status='ACTIVE' ORDER BY created_at DESC\")).rows);\n"
+          if route not in s:
+              i = s.index(marker)
+              s = s[:i] + route + s[i:]
+              p.write_text(s)
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/api/src/main.ts
+          git diff --cached --quiet || git commit -m "fix: expose router catalog to customers [router-patch]"
+          git push
