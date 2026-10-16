@@ -21,9 +21,17 @@ const requiredTables = [
 ];
 for (const table of requiredTables) contains(schema, `CREATE TABLE IF NOT EXISTS ${table}(`, `missing table: ${table}`);
 
+// The API groups admin/customer endpoints under Fastify prefixes. Validate the
+// prefixes separately, then validate the route fragments inside each group.
+const requiredPrefixes = [
+  "prefix:'/api/v1/admin'",
+  "prefix:'/api/v1/customer'"
+];
+for (const prefix of requiredPrefixes) contains(api, prefix, `missing API route prefix: ${prefix}`);
+
 const requiredRoutes = [
   "'/api/v1/auth/login'","'/api/v1/auth/logout'","'/api/v1/customer/auth/register'",
-  "'/api/v1/customer/catalog/categories'","'/api/v1/customer/services'","'/services/:id/config'","'/services/:id/renew'",
+  "'/catalog/categories'","'/services'","'/services/:id/config'","'/services/:id/renew'",
   "'/routers/:id/replacement-requests'","'/orders'","'/orders/:id/pay'",
   "'/dashboard'","'/customers'","'/services'","'/routers'","'/servers'",
   "'/catalog'","'/orders'","'/payments'","'/jobs'","'/audit-logs'"
