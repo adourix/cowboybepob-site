@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-APP_DIR="${APP_DIR:-/var/www/cowboybepob}"
-ENV_FILE="${ENV_FILE:-/etc/cowboybepob/site.env}"
+APP_DIR="${APP_DIR:-/home/abdulrahman/projects/cowboybepob}"
+ENV_FILE="${ENV_FILE:-$APP_DIR/.env}"
 FAIL=0
 
 check(){
@@ -12,7 +12,9 @@ check(){
 [[ -d "$APP_DIR" ]] || { echo "[FAIL] app directory: $APP_DIR"; exit 1; }
 [[ -f "$ENV_FILE" ]] || { echo "[FAIL] env file: $ENV_FILE"; exit 1; }
 
+set -a
 source "$ENV_FILE"
+set +a
 API_PORT="${PORT:-5002}"
 
 echo "== CowboyBepob Native Audit =="
@@ -20,6 +22,7 @@ echo "APP_DIR=$APP_DIR"
 echo "PUBLIC_PORT=5001"
 echo "API_PORT=$API_PORT"
 echo
+check "project owned by abdulrahman" bash -c "[[ \"$(stat -c '%U' '$APP_DIR')\" == 'abdulrahman' ]]"
 check "node >= 20" bash -c '[[ "$(node -p "process.versions.node.split(\".\")[0]")" -ge 20 ]]'
 check "npm available" command -v npm
 check "psql available" command -v psql
