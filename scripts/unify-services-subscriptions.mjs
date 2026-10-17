@@ -2,10 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const root = process.cwd();
-const files = [
-  path.join(root, 'apps/web/src/app.tsx'),
-  path.join(root, 'apps/web/src/main.tsx'),
-];
+const files = [path.join(root, 'apps/web/src/app.tsx'), path.join(root, 'apps/web/src/main.tsx')];
 
 function replaceOnce(source, pattern, replacement, label) {
   const next = source.replace(pattern, replacement);
@@ -16,18 +13,12 @@ function replaceOnce(source, pattern, replacement, label) {
 for (const file of files) {
   let s = fs.readFileSync(file, 'utf8');
 
-  // Keep Services as the primary business UI. Subscriptions and configs remain
-  // database/API concepts, but are no longer separate admin navigation pages.
+  s = s.replace("import {BrowserRouter,useNavigate,useLocation,NavLink,Routes,Route} from 'react-router-dom';", "import {BrowserRouter,useNavigate,useLocation,NavLink,Routes,Route,Navigate} from 'react-router-dom';");
   s = s.replace("['/admin/subscriptions','الاشتراكات',CreditCard],", '');
   s = s.replace("['/admin/configs','الكونفيجات',Box],", '');
   s = s.replace("Activity,Box,CreditCard", "Activity,CreditCard");
 
-  s = replaceOnce(
-    s,
-    /type ResourceKind='customers'\|'services'\|'subscriptions'\|'routers'\|'servers'\|'orders'\|'payments'\|'jobs'\|'audit';/,
-    "type ResourceKind='customers'|'services'|'routers'|'servers'|'orders'|'payments'|'jobs'|'audit';",
-    'ResourceKind'
-  );
+  s = replaceOnce(s, /type ResourceKind='customers'\|'services'\|'subscriptions'\|'routers'\|'servers'\|'orders'\|'payments'\|'jobs'\|'audit';/, "type ResourceKind='customers'|'services'|'routers'|'servers'|'orders'|'payments'|'jobs'|'audit';", 'ResourceKind');
 
   s = replaceOnce(
     s,
@@ -36,39 +27,20 @@ for (const file of files) {
     'services/subscriptions meta'
   );
 
-  // Add a display-only usage field without changing the API contract.
   if (!s.includes("const bytes=(v:any)=>")) {
-    s = replaceOnce(
-      s,
-      "const date=(v:any)=>v?new Date(v).toLocaleString('ar-EG',{dateStyle:'medium',timeStyle:'short'}):'—';",
-      "const date=(v:any)=>v?new Date(v).toLocaleString('ar-EG',{dateStyle:'medium',timeStyle:'short'}):'—';\nconst bytes=(v:any)=>{const n=Number(v);if(!Number.isFinite(n)||n<0)return '—';if(n>=1024**3)return `${(n/1024**3).toFixed(1)} GB`;if(n>=1024**2)return `${(n/1024**2).toFixed(1)} MB`;if(n>=1024)return `${(n/1024).toFixed(1)} KB`;return `${n} B`;};",
-      'bytes helper'
-    );
+    s = replaceOnce(s, "const date=(v:any)=>v?new Date(v).toLocaleString('ar-EG',{dateStyle:'medium',timeStyle:'short'}):'—';", "const date=(v:any)=>v?new Date(v).toLocaleString('ar-EG',{dateStyle:'medium',timeStyle:'short'}):'—';\nconst bytes=(v:any)=>{const n=Number(v);if(!Number.isFinite(n)||n<0)return '—';if(n>=1024**3)return `${(n/1024**3).toFixed(1)} GB`;if(n>=1024**2)return `${(n/1024**2).toFixed(1)} MB`;if(n>=1024)return `${(n/1024).toFixed(1)} KB`;return `${n} B`;};", 'bytes helper');
   }
 
-  s = s.replace(
-    "const canAdd=['customers','routers','servers'].includes(kind);",
-    "const canAdd=['customers','services','routers','servers'].includes(kind);"
-  );
-  s = s.replace(
-    "<Heading title={m.title} sub={kind==='payments'?'مراجعة وتأكيد المدفوعات اليدوية من هنا.':'بيانات حقيقية من الـAPI.'} onAdd={canAdd?()=>setOpen(true):undefined}/>",
-    "<Heading title={m.title} sub={kind==='services'?'الخدمة هي الكيان الأساسي؛ الاشتراك والكونفيج يظهران بداخلها.':kind==='payments'?'مراجعة وتأكيد المدفوعات اليدوية من هنا.':'بيانات حقيقية من الـAPI.'} onAdd={canAdd?()=>setOpen(true):undefined} addText={kind==='services'?'إضافة خدمة':undefined}/>"
-  );
+  s = s.replace("const canAdd=['customers','routers','servers'].includes(kind);", "const canAdd=['customers','services','routers','servers'].includes(kind);");
+  s = s.replace("<Heading title={m.title} sub={kind==='payments'?'مراجعة وتأكيد المدفوعات اليدوية من هنا.':'بيانات حقيقية من الـAPI.'} onAdd={canAdd?()=>setOpen(true):undefined}/>", "<Heading title={m.title} sub={kind==='services'?'الخدمة هي الكيان الأساسي؛ الاشتراك والكونفيج يظهران بداخلها.':kind==='payments'?'مراجعة وتأكيد المدفوعات اليدوية من هنا.':'بيانات حقيقية من الـAPI.'} onAdd={canAdd?()=>setOpen(true):undefined} addText={kind==='services'?'إضافة خدمة':undefined}/>");
 
-  // Remove subscription-specific delete/UI branches. Service deletion already
-  // removes its subscription periods, configs and provider account in the API.
   s = s.replace("const title=kind==='routers'?'الراوتر':kind==='subscriptions'?'الاشتراك':kind==='services'?'الخدمة':'الخادم';", "const title=kind==='routers'?'الراوتر':kind==='services'?'الخدمة':'الخادم';");
-  s = s.replace(":kind==='subscriptions'?`/api/v1/admin/subscriptions/${id}`", '');
+  s = s.replace("const endpoint=kind==='routers'?`/api/v1/admin/routers/${id}`:kind==='subscriptions'?`/api/v1/admin/subscriptions/${id}`:kind==='services'?`/api/v1/admin/services/${id}`:`/api/v1/admin/servers/hosts/${id}`;", "const endpoint=kind==='routers'?`/api/v1/admin/routers/${id}`:kind==='services'?`/api/v1/admin/services/${id}`:`/api/v1/admin/servers/hosts/${id}`;");
   s = s.replace("['services','subscriptions','routers','servers','payments']", "['services','routers','servers','payments']");
   s = s.replace("['services','subscriptions','routers'].includes(kind)", "['services','routers'].includes(kind)");
 
-  // Render bytes for the service usage column.
-  s = s.replace(
-    "k.includes('minor')?money(r[k]):k.endsWith('_at')||k.includes('date')?date(r[k]):['status','connectivity','state','lifecycle_status','health_status'].includes(k)?<span className=\"badge\">{label(r[k])}</span>:String(r[k]??'—')",
-    "k==='usage_display'?`${bytes(r.used_bytes)} / ${bytes(r.quota_bytes)}`:k.includes('minor')?money(r[k]):k.endsWith('_at')||k.includes('date')?date(r[k]):['status','subscription_status','connectivity','state','lifecycle_status','health_status'].includes(k)?<span className=\"badge\">{label(r[k])}</span>:String(r[k]??'—')"
-  );
+  s = s.replace("k.includes('minor')?money(r[k]):k.endsWith('_at')||k.includes('date')?date(r[k]):['status','connectivity','state','lifecycle_status','health_status'].includes(k)?<span className=\"badge\">{label(r[k])}</span>:String(r[k]??'—')", "k==='usage_display'?`${bytes(r.used_bytes)} / ${bytes(r.quota_bytes)}`:k.includes('minor')?money(r[k]):k.endsWith('_at')||k.includes('date')?date(r[k]):['status','subscription_status','connectivity','state','lifecycle_status','health_status'].includes(k)?<span className=\"badge\">{label(r[k])}</span>:String(r[k]??'—')");
 
-  // Service creation: customer + plan/category + manual VLESS/VMess link.
   if (!s.includes('function ServiceForm(')) {
     const anchor = 'function CustomerForm({onClose,onDone}';
     const idx = s.indexOf(anchor);
@@ -77,12 +49,8 @@ for (const file of files) {
     s = s.slice(0, idx) + serviceForm + s.slice(idx);
   }
 
-  s = s.replace(
-    "{open&&kind==='customers'&&<CustomerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}",
-    "{open&&kind==='customers'&&<CustomerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}{open&&kind==='services'&&<ServiceForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}"
-  );
+  s = s.replace("{open&&kind==='customers'&&<CustomerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}", "{open&&kind==='customers'&&<CustomerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}{open&&kind==='services'&&<ServiceForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}");
 
-  // Config is an implementation detail of Service, not an admin page.
   const cfgStart = s.indexOf('function ConfigsPage(');
   if (cfgStart >= 0) {
     const cfgEnd = s.indexOf('\nfunction SettingsPage(', cfgStart);
@@ -97,4 +65,3 @@ for (const file of files) {
 }
 
 console.log('Services are now the primary admin entity; subscription/config are embedded details.');
-`
