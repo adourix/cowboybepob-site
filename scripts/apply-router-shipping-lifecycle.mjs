@@ -86,25 +86,17 @@ const replaceOnce = (source, old, next, label) => {
     const funcs = marker + "const shipRouterOrder=async(id:string)=>{if(!window.confirm('تأكيد شحن طلب الراوتر؟'))return;setLoading(true);setError('');try{await api(`/api/v1/admin/orders/${id}/ship`,{method:'POST',body:JSON.stringify({})});await load()}catch(e:any){setError(e.message)}finally{setLoading(false)}};const deliverRouterOrder=async(id:string)=>{if(!window.confirm('تأكيد استلام العميل للراوتر؟ سيتم إكمال الطلب.'))return;setLoading(true);setError('');try{await api(`/api/v1/admin/orders/${id}/deliver`,{method:'POST',body:JSON.stringify({})});await load()}catch(e:any){setError(e.message)}finally{setLoading(false)}};";
     s = replaceOnce(s, marker, funcs, 'UI order action functions');
 
-    // The action-column implementation has changed several times. Match it structurally
-    // instead of relying on one exact quote/spacing variant.
-    const actionColumn = /\{\[([^\]]*payments[^\]]*)\]\.includes\(kind\)&&<td>/;
-    const actionMatch = s.match(actionColumn);
-    if (actionMatch && !actionMatch[1].includes('orders')) {
-      const updated = actionMatch[1].trimEnd() + ",'orders'";
-      s = s.replace(actionMatch[0], `{[${updated}].includes(kind)&&<td>`);
-    }
+    // Current ResourcePage uses r (not row), and its action cell is shared by
+    // services/subscriptions/routers/servers/payments. Add orders to that same cell.
+    s = s.replaceAll("['services','subscriptions','routers','servers','payments']", "['services','subscriptions','routers','servers','payments','orders']");
+    s = s.replace("m.cols.length+((kind==='servers'||kind==='payments')?1:0)", "m.cols.length+(['services','subscriptions','routers','servers','payments','orders'].includes(kind)?1:0)");
 
-    const paymentAction = "{kind==='payments'&&String(row.status)==='PENDING'&&<><button className=\"small-button\" onClick={()=>confirmPayment(row.id)}>تأكيد الدفع</button><button className=\"small-button danger\" onClick={()=>rejectPayment(row.id)}>رفض</button></>}";
-    const orderActions = "{kind==='orders'&&row.router_only&&String(row.status)==='FULFILLING'&&<button className=\"small-button\" onClick={()=>shipRouterOrder(row.id)}>شحن الطلب</button>}{kind==='orders'&&row.router_only&&String(row.status)==='SHIPPED'&&<button className=\"small-button\" onClick={()=>deliverRouterOrder(row.id)}>تم التسليم</button>}";
-    if (!s.includes(orderActions)) {
-      if (s.includes(paymentAction)) s = s.replace(paymentAction, paymentAction + orderActions);
-      else {
-        // Fallback: add the controls immediately after the order status cell.
-        const orderStatusCell = /\{label\(row\.status\)\}<\/td>/;
-        if (!orderStatusCell.test(s)) throw new Error('Missing patch marker: UI order action insertion');
-        s = s.replace(orderStatusCell, `{label(row.status)}</td><td>${orderActions}`);
-      }
+    const paymentCell = "{kind==='payments'&&<td><div className=\"row-actions\">{['INITIATED','PENDING'].includes(String(r.status))&&<><button className=\"primary-button compact\" type=\"button\" onClick={()=>void confirmPayment(r.id)} disabled={loading}>تأكيد الدفع</button><button className=\"danger-button\" type=\"button\" onClick={()=>void rejectPayment(r.id)} disabled={loading}>رفض</button></>}{r.status==='SUCCEEDED'&&<span className=\"badge success-badge\">تم التأكيد</span>}{r.status==='FAILED'&&<span className=\"badge\">مرفوض</span>}</div></td>}";
+    const orderCell = "{kind==='orders'&&<td><div className=\"row-actions\">{r.router_only&&String(r.status)==='FULFILLING'&&<button className=\"primary-button compact\" type=\"button\" onClick={()=>void shipRouterOrder(r.id)} disabled={loading}>شحن الطلب</button>}{r.router_only&&String(r.status)==='SHIPPED'&&<button className=\"primary-button compact\" type=\"button\" onClick={()=>void deliverRouterOrder(r.id)} disabled={loading}>تم التسليم</button>}</div></td>}";
+    if (s.includes(paymentCell)) {
+      s = replaceOnce(s, paymentCell, paymentCell + orderCell, 'UI order action cell');
+    } else if (!s.includes(orderCell)) {
+      throw new Error('Missing patch marker: UI payment/order action cell');
     }
     write(p, s);
   }
