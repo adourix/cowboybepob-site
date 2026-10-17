@@ -239,6 +239,43 @@ app.register(async admin => {
   admin.get('/orders', async (req:Req) => { requirePermission(req,'orders:read'); return (await db(`SELECT o.*,c.public_code customer_code,c.full_name customer_name,(SELECT count(*) FROM order_items oi WHERE oi.order_id=o.id)::int item_count FROM orders o JOIN customers c ON c.id=o.customer_id ORDER BY o.created_at DESC LIMIT 200`)).rows; });
   admin.post('/orders/:id/cancel', async (req:any) => { requirePermission(req,'orders:write');requireCsrf(req);return (await db(`UPDATE orders SET status='CANCELLED',cancelled_at=now(),updated_at=now() WHERE id=$1 AND status IN ('PENDING_PAYMENT','FULFILLING') RETURNING *`,[req.params.id])).rows[0]||null; });
   admin.get('/payments', async (req:Req) => { requirePermission(req,'payments:read'); return (await db(`SELECT p.*,o.public_code order_code,c.full_name customer_name FROM payments p JOIN orders o ON o.id=p.order_id JOIN customers c ON c.id=o.customer_id ORDER BY p.created_at DESC LIMIT 200`)).rows; });
+  admin.post('/payments/:id/confirm', async (req:any) => {
+    requirePermission(req,'payments:write'); requireCsrf(req);
+    const c=await pool.connect();
+    try {
+      await c.query('BEGIN');
+      const r=await c.query(`SELECT p.*,o.customer_id,o.public_code order_code,o.total_minor,o.currency order_currency,o.status order_status FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1 FOR UPDATE`,[req.params.id]);
+      if(!r.rowCount) throw Object.assign(new Error('الدفعة غير موجودة'),{statusCode:404});
+      const p=r.rows[0];
+      if(p.status==='SUCCEEDED') { await c.query('COMMIT'); return p; }
+      if(!['INITIATED','PENDING'].includes(String(p.status))) throw Object.assign(new Error('لا يمكن تأكيد هذه الدفعة في حالتها الحالية'),{statusCode:409});
+      if(Number(p.amount_minor)!==Number(p.total_minor)) throw Object.assign(new Error('مبلغ الدفعة لا يطابق إجمالي الطلب'),{statusCode:409});
+      if(p.order_status==='CANCELLED') throw Object.assign(new Error('لا يمكن تأكيد دفع طلب ملغى'),{statusCode:409});
+      const pay=await c.query(`UPDATE payments SET status='SUCCEEDED',paid_at=COALESCE(paid_at,now()),recorded_by_staff_id=$1,updated_at=now() WHERE id=$2 RETURNING *`,[req.principal!.id,p.id]);
+      const order=await c.query(`UPDATE orders SET status='PAID',paid_at=COALESCE(paid_at,now()),updated_at=now() WHERE id=$1 RETURNING id`,[p.order_id]);
+      if(order.rowCount) await c.query(`INSERT INTO jobs(type,key,subject_type,subject_id,payload) VALUES('fulfill_order',$1,'ORDER',$2,$3) ON CONFLICT(key) DO NOTHING`,[`fulfill:${p.order_id}`,p.order_id,JSON.stringify({orderId:p.order_id})]);
+      await audit(c,req,'payment.confirmed','payments',p.id,{gateway:p.gateway,method:p.method,amountMinor:Number(p.amount_minor),orderCode:p.order_code},p.customer_id);
+      await c.query('COMMIT');
+      return pay.rows[0];
+    } catch(e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
+  });
+  admin.post('/payments/:id/reject', async (req:any) => {
+    requirePermission(req,'payments:write'); requireCsrf(req);
+    const c=await pool.connect();
+    try {
+      await c.query('BEGIN');
+      const r=await c.query(`SELECT p.*,o.public_code order_code,o.status order_status,o.customer_id FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1 FOR UPDATE`,[req.params.id]);
+      if(!r.rowCount) throw Object.assign(new Error('الدفعة غير موجودة'),{statusCode:404});
+      const p=r.rows[0];
+      if(p.status==='FAILED') { await c.query('COMMIT'); return p; }
+      if(!['INITIATED','PENDING'].includes(String(p.status))) throw Object.assign(new Error('لا يمكن رفض هذه الدفعة في حالتها الحالية'),{statusCode:409});
+      const reason=String(req.body?.reason||'رفض الدفع اليدوي').trim().slice(0,500);
+      const pay=await c.query(`UPDATE payments SET status='FAILED',raw=COALESCE(raw,'{}'::jsonb)||jsonb_build_object('rejectionReason',$1),updated_at=now() WHERE id=$2 RETURNING *`,[reason,p.id]);
+      await audit(c,req,'payment.rejected','payments',p.id,{reason,orderCode:p.order_code},p.customer_id);
+      await c.query('COMMIT');
+      return pay.rows[0];
+    } catch(e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
+  });
   admin.post('/payments/manual', async (req:any) => { requirePermission(req,'payments:write');requireCsrf(req);const b=req.body||{};const c=await pool.connect();try{await c.query('BEGIN');const o=await c.query('SELECT * FROM orders WHERE id=$1 FOR UPDATE',[b.orderId]);if(!o.rowCount)throw Object.assign(new Error('Order not found'),{statusCode:404});if(Number(b.amountMinor)!==Number(o.rows[0].total_minor))throw Object.assign(new Error('Amount mismatch'),{statusCode:400});const pay=await c.query(`INSERT INTO payments(order_id,gateway,method,amount_minor,currency,status,recorded_by_staff_id,paid_at) VALUES($1,'manual',$2,$3,$4,'SUCCEEDED',$5,now()) RETURNING *`,[b.orderId,b.method||'bank_transfer',b.amountMinor,o.rows[0].currency,req.principal!.id]);await c.query(`UPDATE orders SET status='PAID',paid_at=now(),updated_at=now() WHERE id=$1`,[b.orderId]);await c.query(`INSERT INTO jobs(type,key,subject_type,subject_id,payload) VALUES('fulfill_order',$1,'ORDER',$2,$3) ON CONFLICT(key) DO NOTHING`,[`fulfill:${b.orderId}`,b.orderId,JSON.stringify({orderId:b.orderId})]);await audit(c,req,'payment.recorded','payments',pay.rows[0].id,{gateway:'manual'},o.rows[0].customer_id);await c.query('COMMIT');return pay.rows[0];}catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}});
   admin.get('/jobs', async (req:Req) => { requirePermission(req,'jobs:read'); return (await db(`SELECT * FROM jobs ORDER BY CASE state WHEN 'NEEDS_ATTENTION' THEN 0 WHEN 'RUNNING' THEN 1 ELSE 2 END,run_at DESC LIMIT 300`)).rows; });
   admin.post('/jobs/:id/retry', async (req:any) => { requirePermission(req,'jobs:write');requireCsrf(req);return (await db(`UPDATE jobs SET state='QUEUED',run_at=now(),last_error=NULL,locked_at=NULL,locked_by=NULL,updated_at=now() WHERE id=$1 AND state='NEEDS_ATTENTION' RETURNING *`,[req.params.id])).rows[0]||null; });
