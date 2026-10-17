@@ -1,0 +1,12 @@
+BEGIN;
+CREATE TABLE IF NOT EXISTS customer_landlines(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),customer_id uuid NOT NULL REFERENCES customers(id) ON DELETE CASCADE,number text NOT NULL,label text,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(customer_id,number));
+UPDATE customer_landlines SET number=regexp_replace(regexp_replace(regexp_replace(trim(number),'[[:space:]().-]+','','g'),'^\+20',''),' ^20','') WHERE number IS NOT NULL;
+UPDATE customer_landlines SET number='0'||number WHERE number !~ '^0' AND number ~ '^[0-9]+$';
+ALTER TABLE customer_landlines DROP CONSTRAINT IF EXISTS customer_landlines_number_format_ck;
+ALTER TABLE customer_landlines ADD CONSTRAINT customer_landlines_number_format_ck CHECK(number~'^0[0-9]{8,10}$');
+ALTER TABLE services ADD COLUMN IF NOT EXISTS landline_id uuid REFERENCES customer_landlines(id);
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS landline_id uuid REFERENCES customer_landlines(id);
+CREATE INDEX IF NOT EXISTS customer_landlines_customer_idx ON customer_landlines(customer_id,created_at);
+CREATE INDEX IF NOT EXISTS services_landline_idx ON services(landline_id);
+CREATE INDEX IF NOT EXISTS order_items_landline_idx ON order_items(landline_id);
+COMMIT;
