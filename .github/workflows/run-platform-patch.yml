@@ -1,0 +1,42 @@
+name: Run platform patch
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Extract and run patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from urllib.request import urlopen
+          import textwrap
+          url='https://raw.githubusercontent.com/adourix/cowboybepob-site/main/.github/workflows/apply-platform-fix.yml'
+          text=urlopen(url).read().decode()
+          marker="python3 - <<'PY'\n"
+          if marker not in text: raise SystemExit('patch script marker missing')
+          script=text.split(marker,1)[1].split('\n          PY',1)[0]
+          Path('/tmp/patch.py').write_text(textwrap.dedent(script))
+          PY
+          python3 /tmp/patch.py
+      - name: Verify
+        run: |
+          npm install
+          npm run typecheck
+          npm test
+          npm run build
+      - name: Commit and clean temporary workflows
+        run: |
+          rm -f .github/workflows/apply-platform-fix.yml .github/workflows/trigger-platform-fix.yml .github/workflows/run-platform-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add db/schema.sql db/migrations/003_manual_services.sql apps/api/src/main.ts apps/api/src/worker.ts apps/web/src/app.tsx apps/web/src/styles.css .github/workflows/apply-platform-fix.yml .github/workflows/trigger-platform-fix.yml .github/workflows/run-platform-patch.yml
+          git commit -m "feat: add manual services and optional router binding [skip ci]"
+          git push origin main
