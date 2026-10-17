@@ -48,7 +48,7 @@ contains(worker, 'manual_link_enc', 'provider-generated client link must be pers
 contains(worker, 'PROVIDER_4XX', 'permanent provider failure must surface on the order item');
 contains(worker, 'recoverStaleJobs', 'worker must recover abandoned locks');
 contains(worker, 'syncAllEndpoints', 'worker must refresh endpoint inventory');
-contains(endpointSync, 'flattenInboundResponse', 'endpoint sync must normalize grouped Marzban inbounds');
+contains(marzban, 'flattenInboundResponse', 'Marzban adapter must normalize grouped inbounds');
 contains(endpointSync, 'markUnseenEndpoints', 'endpoint sync must retire removed inbounds');
 contains(marzban, 'providerId', 'Marzban adapter must support provider-specific credentials');
 contains(marzban, 'AbortSignal.timeout', 'Marzban calls must have a bounded timeout');
