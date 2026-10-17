@@ -7,7 +7,8 @@ const webPath='apps/web/src/main.tsx';
 let api=fs.readFileSync(apiPath,'utf8');
 
 // Keep exactly one GET /admin/subscriptions route.
-const subRe=/\n  admin\.get('\/subscriptions', async \(req:any\) => \{[\s\S]*?\n  \}\);/g;
+// Use RegExp constructor so the patch script itself is safe to parse in Node.
+const subRe=new RegExp("\\n  admin\\.get\\('/subscriptions', async \\(req:any\\) => \\{[\\s\\S]*?\\n  \\}\\);",'g');
 const subMatches=api.match(subRe)||[];
 if(subMatches.length>1){
   let seen=0;
@@ -17,7 +18,7 @@ if(subMatches.length>1){
 
 // Dedicated endpoint for the router-registration modal.
 if(!api.includes("admin.get('/customers/:customerId/configs'")){
-  const customerRe=/  admin\.get('\/customers', async \(req:any\) => \{[\s\S]*?\n  \}\);/;
+  const customerRe=new RegExp("  admin\\.get\\('/customers', async \\(req:any\\) => \\{[\\s\\S]*?\\n  \\}\\);");
   const m=api.match(customerRe);
   if(!m) throw new Error('API: customers GET route not found');
   const route="\n  admin.get('/customers/:customerId/configs', async (req:any) => { requirePermission(req,'services:read'); return (await db(`SELECT cfg.id config_id,cfg.public_code config_code,s.id service_id,s.public_code service_code,s.status service_status,c.name category,c.protocol FROM configs cfg JOIN services s ON s.id=cfg.service_id JOIN customers cu ON cu.id=s.customer_id JOIN config_categories c ON c.id=s.category_id WHERE cu.id=$1 AND cu.status<>'DELETED' AND cfg.status='CURRENT' AND s.status IN ('PROVISIONING','ACTIVE','SUSPENDED') ORDER BY cfg.created_at DESC`,[req.params.customerId])).rows; });";
@@ -40,7 +41,7 @@ fs.writeFileSync(apiPath,api);
 
 // ---------- Web ----------
 let web=fs.readFileSync(webPath,'utf8');
-const routerRe=/function RouterForm\(\{onClose,onDone\}:\{onClose:\(\)=>void;onDone:\(\)=>void\}\)\{[\s\S]*?\nfunction ServerForm/;
+const routerRe=new RegExp("function RouterForm\\(\\{onClose,onDone\\}:\\{onClose:\\(\\)=>void;onDone:\\(\\)=>void\\}\\)\\{[\\s\\S]*?\\nfunction ServerForm");
 const routerMatch=web.match(routerRe);
 if(!routerMatch) throw new Error('WEB: RouterForm not found');
 
