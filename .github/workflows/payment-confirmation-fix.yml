@@ -16,7 +16,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Patch payment confirmation flow
-        shell: python
+        shell: python {0}
         run: |
           from pathlib import Path
 
