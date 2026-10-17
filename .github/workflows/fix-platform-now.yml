@@ -23,8 +23,6 @@ jobs:
       - run: npm run build
       - name: Commit platform patch
         run: |
-          git fetch origin main
-          git rebase origin/main
           rm -f scripts/final-platform-patch.py scripts/fix-patch-script.py PATCH_TRIGGER.txt PATCH_TRIGGER_2.txt package-lock.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
