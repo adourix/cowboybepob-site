@@ -1,0 +1,114 @@
+name: Fix root admin deletion UI
+
+on:
+  push:
+    paths:
+      - .github/workflows/fix-root-admin-deletion.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch the actual Vite entrypoint
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('apps/web/src/app.tsx')
+          text = path.read_text(encoding='utf-8')
+
+          # index.html loads app.tsx directly; main.tsx is not the production entrypoint.
+          # Make the deletion controls part of the actual root application.
+          if "Trash2" not in text.split('\n', 8)[0:5].__str__():
+              text = text.replace(
+                  "KeyRound}from'lucide-react';",
+                  "KeyRound,Trash2}from'lucide-react';",
+                  1,
+              )
+
+          nav_needle = "['/admin/servers','الخوادم',HardDrive],"
+          nav_add = nav_needle + "['/admin/providers','المزوّدون',Settings],['/admin/configs','الكونفيجات',Package],"
+          if "['/admin/providers','المزوّدون',Settings]" not in text:
+              if nav_needle not in text:
+                  raise SystemExit('actual admin nav anchor not found')
+              text = text.replace(nav_needle, nav_add, 1)
+
+          pages = r'''\nfunction ServersPage(){
+            const [rows,setRows]=useState<any[]>([]);
+            const [error,setError]=useState('');
+            const [loading,setLoading]=useState(false);
+            const load=()=>{setLoading(true);setError('');api('/api/v1/admin/servers').then(x=>setRows(Array.isArray(x)?x:[])).catch(e=>setError(e.message)).finally(()=>setLoading(false));};
+            useEffect(()=>{void load();},[]);
+            const remove=async(id:string,name:string)=>{if(!window.confirm(`حذف الخادم «${name}»؟`))return;setError('');try{await api(`/api/v1/admin/servers/hosts/${id}`,{method:'DELETE'});await load();}catch(e:any){setError(e.message)}};
+            return <div className="page"><Heading title="الخوادم" sub="إدارة الخوادم وحذف الخادم غير المستخدم."/><section className="panel table-panel">{error&&<div className="alert error">{error}</div>}<div className="toolbar"><button className="secondary-button" type="button" onClick={load}><RefreshCw size={15}/> تحديث</button></div><div className="table-wrap"><table><thead><tr><th>الخادم</th><th>العنوان</th><th>المزوّد</th><th>الحالة</th><th>الصحة</th><th>النقاط</th><th>إجراءات</th></tr></thead><tbody>{loading?<tr><td className="empty" colSpan={7}>جاري التحميل...</td></tr>:rows.length===0?<tr><td className="empty" colSpan={7}>لا توجد خوادم</td></tr>:rows.map((r:any)=><tr key={r.id}><td>{r.name||'—'}</td><td>{r.address||'—'}</td><td>{r.provider_name||'—'}</td><td><span className="badge">{label(r.status)}</span></td><td><span className="badge">{label(r.health_status)}</span></td><td>{r.endpoint_count??0}</td><td><button className="danger-button" type="button" onClick={()=>remove(r.id,r.name||r.address||'هذا الخادم')}><Trash2 size={15}/> حذف</button></td></tr>)}</tbody></table></div></section></div>;
+          }
+
+          function ProvidersPage(){
+            const [rows,setRows]=useState<any[]>([]);
+            const [error,setError]=useState('');
+            const [loading,setLoading]=useState(false);
+            const load=()=>{setLoading(true);setError('');api('/api/v1/admin/provider-instances').then(x=>setRows(Array.isArray(x)?x:(x.providers||[]))).catch(e=>setError(e.message)).finally(()=>setLoading(false));};
+            useEffect(()=>{void load();},[]);
+            const remove=async(id:string,name:string)=>{if(!window.confirm(`حذف المزوّد «${name}»؟`))return;setError('');try{await api(`/api/v1/admin/provider-instances/${id}`,{method:'DELETE'});await load();}catch(e:any){setError(e.message)}};
+            return <div className="page"><Heading title="المزوّدون" sub="إدارة مزوّدي Marzban وبيانات الاتصال."/><section className="panel table-panel">{error&&<div className="alert error">{error}</div>}<div className="toolbar"><button className="secondary-button" type="button" onClick={load}><RefreshCw size={15}/> تحديث</button></div><div className="table-wrap"><table><thead><tr><th>الاسم</th><th>Base URL</th><th>الحالة</th><th>Credentials</th><th>آخر نجاح</th><th>إجراءات</th></tr></thead><tbody>{loading?<tr><td className="empty" colSpan={6}>جاري التحميل...</td></tr>:rows.length===0?<tr><td className="empty" colSpan={6}>لا توجد مزوّدات</td></tr>:rows.map((r:any)=><tr key={r.id}><td>{r.name||'—'}</td><td className="code">{r.base_url||r.baseUrl||'—'}</td><td><span className="badge">{label(r.status)}</span></td><td>{r.has_credentials?'موجودة':'غير موجودة'}</td><td>{date(r.last_ok_at)}</td><td><button className="danger-button" type="button" onClick={()=>remove(r.id,r.name||'هذا المزوّد')}><Trash2 size={15}/> حذف</button></td></tr>)}</tbody></table></div></section></div>;
+          }
+
+          function ConfigsPage(){
+            const [rows,setRows]=useState<any[]>([]);
+            const [error,setError]=useState('');
+            const [loading,setLoading]=useState(false);
+            const load=()=>{setLoading(true);setError('');api('/api/v1/admin/configs').then(x=>setRows(Array.isArray(x)?x:[])).catch(e=>setError(e.message)).finally(()=>setLoading(false));};
+            useEffect(()=>{void load();},[]);
+            const remove=async(id:string,code:string)=>{if(!window.confirm(`حذف الكونفيج «${code}»؟`))return;setError('');try{await api(`/api/v1/admin/configs/${id}`,{method:'DELETE'});await load();}catch(e:any){setError(e.message)}};
+            return <div className="page"><Heading title="الكونفيجات" sub="إدارة الكونفيجات المحفوظة للخدمات."/><section className="panel table-panel">{error&&<div className="alert error">{error}</div>}<div className="toolbar"><button className="secondary-button" type="button" onClick={load}><RefreshCw size={15}/> تحديث</button></div><div className="table-wrap"><table><thead><tr><th>الكود</th><th>الخدمة</th><th>الحالة</th><th>البروتوكول</th><th>الإصدار</th><th>التاريخ</th><th>إجراءات</th></tr></thead><tbody>{loading?<tr><td className="empty" colSpan={7}>جاري التحميل...</td></tr>:rows.length===0?<tr><td className="empty" colSpan={7}>لا توجد كونفيجات</td></tr>:rows.map((r:any)=><tr key={r.id}><td>{r.public_code||'—'}</td><td>{r.service_code||r.service_public_code||r.service_id||'—'}</td><td><span className="badge">{label(r.status)}</span></td><td>{r.protocol||'—'}</td><td>{r.version??'—'}</td><td>{date(r.created_at)}</td><td><button className="danger-button" type="button" onClick={()=>remove(r.id,r.public_code||r.id)}><Trash2 size={15}/> حذف</button></td></tr>)}</tbody></table></div></section></div>;
+          }
+          '''
+
+          # Replace an existing ServersPage if present; otherwise create the canonical one.
+          if 'function ServersPage(' in text:
+              start = text.index('function ServersPage(')
+              nxt = text.find('\nfunction ', start + 10)
+              if nxt == -1:
+                  raise SystemExit('could not find end of existing ServersPage')
+              text = text[:start] + pages + text[nxt+1:]
+          else:
+              marker = 'function SettingsPage('
+              if marker not in text:
+                  marker = 'function App('
+              if marker not in text:
+                  raise SystemExit('page insertion anchor not found')
+              text = text.replace(marker, pages + '\n' + marker, 1)
+
+          # Point the actual root routes at the new pages.
+          server_route = re.search(r'<Route path=["\']/admin/servers["\'][^>]*/>', text)
+          if not server_route:
+              raise SystemExit('actual /admin/servers route not found')
+          text = text[:server_route.start()] + '<Route path="/admin/servers" element={<ServersPage/>}/>' + text[server_route.end():]
+
+          if 'path="/admin/providers"' not in text:
+              text = text.replace('<Route path="/admin/servers" element={<ServersPage/>}/>', '<Route path="/admin/servers" element={<ServersPage/>}/><Route path="/admin/providers" element={<ProvidersPage/>}/><Route path="/admin/configs" element={<ConfigsPage/>}/>', 1)
+
+          path.write_text(text, encoding='utf-8')
+          print('patched actual root entry apps/web/src/app.tsx')
+          PY
+
+      - name: Build actual web entrypoint
+        run: npm install --include=dev && npm run build
+
+      - name: Commit and remove temporary workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/web/src/app.tsx
+          git rm .github/workflows/fix-root-admin-deletion.yml
+          git commit -m "fix: add deletion controls to actual admin UI entrypoint"
+          git push
