@@ -17,5 +17,13 @@ marker="print('platform patch applied')"
 fix="tools=root/'apps/web/src/admin-tools.tsx'\nt=tools.read_text()\nt=t.replace('plans.map(p=>','plans.map((p:any)=>').replace('rs.map(r=>','rs.map((r:any)=>')\ntools.write_text(t)\n"
 if fix not in s:
     s=s.replace(marker,fix+marker)
+# Fix the service listing query to actually join routers.
+join_fix="a=a.replace(\"LEFT JOIN subscriptions sub ON sub.service_id=s.id LEFT JOIN service_allocations\", \"LEFT JOIN subscriptions sub ON sub.service_id=s.id LEFT JOIN routers r ON r.id=s.router_id LEFT JOIN service_allocations\")\n"
+if join_fix not in s:
+    s=s.replace(marker,join_fix+fix+marker)
+# Fix manual config insert parameter count.
+param_fix="a=a.replace(\"JSON.stringify({...parsed.params,address:parsed.address,port:parsed.port}),encryptSecret(String(b.link).trim())\", \"JSON.stringify({...parsed.params,address:parsed.address,port:parsed.port}),encryptSecret(String(b.link).trim())\")\n"
+# The generated route currently has an extra literal env-v1 argument in its values array; remove that exact occurrence.
+s=s.replace("encryptSecret(parsed.uuid),'env-v1',JSON.stringify({...parsed.params,address:parsed.address,port:parsed.port}),encryptSecret(String(b.link).trim())", "encryptSecret(parsed.uuid),JSON.stringify({...parsed.params,address:parsed.address,port:parsed.port}),encryptSecret(String(b.link).trim())")
 p.write_text(s)
 print('patch runner fixed')
