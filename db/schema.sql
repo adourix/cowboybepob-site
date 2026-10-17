@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions(id uuid PRIMARY KEY DEFAULT gen_random_
 CREATE INDEX IF NOT EXISTS auth_sessions_principal_idx ON auth_sessions(principal_type,principal_id);
 CREATE TABLE IF NOT EXISTS auth_tokens(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),principal_type text NOT NULL,principal_id uuid NOT NULL,purpose text NOT NULL,token_hash bytea UNIQUE NOT NULL,expires_at timestamptz NOT NULL,used_at timestamptz,created_at timestamptz NOT NULL DEFAULT now());
 
-CREATE TABLE IF NOT EXISTS provider_instances(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),type text NOT NULL DEFAULT 'MARZBAN',name text UNIQUE NOT NULL,base_url text NOT NULL,credentials_ref text NOT NULL DEFAULT 'MARZBAN_ADMIN',api_version text,status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN('ACTIVE','DISABLED')),last_ok_at timestamptz,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS provider_instances(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),type text NOT NULL DEFAULT 'MARZBAN',name text UNIQUE NOT NULL,base_url text NOT NULL,credentials_ref text NOT NULL DEFAULT 'MARZBAN_ADMIN',credentials_enc bytea,api_version text,status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN('ACTIVE','DISABLED')),last_ok_at timestamptz,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS hosts(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),name text NOT NULL,address text NOT NULL,country char(2) NOT NULL DEFAULT 'EG',city text,region text,hosting_provider text,provider_instance_id uuid NOT NULL REFERENCES provider_instances(id),provider_node_ref text,status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN('ACTIVE','MAINTENANCE','DISABLED','DECOMMISSIONED')),health_status text NOT NULL DEFAULT 'UNKNOWN' CHECK(health_status IN('HEALTHY','DEGRADED','DOWN','UNKNOWN')),cpu_pct numeric(5,2),ram_pct numeric(5,2),metrics_at timestamptz,last_health_check_at timestamptz,notes text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
 CREATE UNIQUE INDEX IF NOT EXISTS hosts_live_address_uq ON hosts(address) WHERE status<>'DECOMMISSIONED';
 CREATE TABLE IF NOT EXISTS server_endpoints(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),public_code text UNIQUE NOT NULL DEFAULT('SRV-'||lpad(nextval('endpoint_code_seq')::text,6,'0')),host_id uuid NOT NULL REFERENCES hosts(id),name text NOT NULL,port integer NOT NULL CHECK(port BETWEEN 1 AND 65535),protocol text NOT NULL CHECK(protocol IN('vless','vmess')),transport text,security text,provider_inbound_tag text NOT NULL,public_params jsonb NOT NULL DEFAULT '{}',status text NOT NULL DEFAULT 'ACTIVE' CHECK(status IN('ACTIVE','DRAINING','MAINTENANCE','DISABLED')),health_status text NOT NULL DEFAULT 'UNKNOWN' CHECK(health_status IN('HEALTHY','DEGRADED','DOWN','UNKNOWN')),last_health_check_at timestamptz,max_services integer NOT NULL CHECK(max_services>=0),allocated_count integer NOT NULL DEFAULT 0 CHECK(allocated_count>=0),weight integer NOT NULL DEFAULT 100,description text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(host_id,port));
@@ -55,9 +55,7 @@ CREATE INDEX IF NOT EXISTS audit_created_idx ON audit_logs(occurred_at DESC);
 
 INSERT INTO app_settings(key,value) VALUES('grace_period_days','3'),('retention_days','30'),('provisioning_alert_hours','24'),('notifications','{"email":true}') ON CONFLICT(key) DO NOTHING;
 
--- MVP convenience: automatically associate a newly-created endpoint with active categories
--- that use the same protocol. This prevents a fresh native installation from creating
--- plans that can never be allocated because category_endpoints was left empty.
+-- Automatically associate new endpoints/categories by protocol.
 CREATE OR REPLACE FUNCTION cb_link_endpoint_to_categories() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   INSERT INTO category_endpoints(category_id,endpoint_id,status,priority)
@@ -81,3 +79,7 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS cb_category_auto_link ON config_categories;
 CREATE TRIGGER cb_category_auto_link AFTER INSERT OR UPDATE OF status,protocol ON config_categories FOR EACH ROW EXECUTE FUNCTION cb_link_category_to_endpoints();
+
+-- Runtime compatibility for databases created before encrypted provider credentials
+-- became part of the schema. Safe to run repeatedly.
+ALTER TABLE provider_instances ADD COLUMN IF NOT EXISTS credentials_enc bytea;
