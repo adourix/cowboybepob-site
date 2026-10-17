@@ -2,7 +2,6 @@ import { Pool } from 'pg';
 import crypto from 'node:crypto';
 
 export type MarzbanUser = { username:string; status?:string; expire?:number; data_limit?:number; used_traffic?:number; subscription_url?:string; links?:string[]; proxies?:Record<string,unknown>; inbounds?:Record<string,string[]> };
-
 type ProviderSecret = { username:string; password:string };
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -17,6 +16,11 @@ function decryptSecret(value:Buffer){
  return Buffer.concat([decipher.update(data),decipher.final()]).toString('utf8');
 }
 
+function isLocalProviderAlias(hostname:string){
+ const h=hostname.toLowerCase();
+ return h==='marzban'||h==='localhost'||h==='127.0.0.1'||h==='::1';
+}
+
 async function resolveProviderSecret(baseUrl:string, username?:string, password?:string):Promise<ProviderSecret>{
  if(username && password) return {username,password};
  const r=await pool.query(`SELECT credentials_enc FROM provider_instances WHERE base_url=$1 AND status='ACTIVE' ORDER BY created_at LIMIT 1`,[baseUrl]);
@@ -28,15 +32,41 @@ async function resolveProviderSecret(baseUrl:string, username?:string, password?
  return parsed;
 }
 
+/**
+ * Production is native systemd, while Marzban may have been configured with a
+ * Docker-only hostname such as http://marzban:8080. Resolve that alias through
+ * the host attached to the same provider instance. Public/domain URLs are left
+ * untouched.
+ */
+async function resolveBaseUrl(baseUrl:string){
+ const raw=String(baseUrl||'').trim().replace(/\/$/,'');
+ if(!raw) return raw;
+ let u:URL;
+ try { u=new URL(raw); } catch { return raw; }
+ if(!isLocalProviderAlias(u.hostname)) return raw;
+ const r=await pool.query(`
+   SELECT h.address
+   FROM hosts h
+   JOIN provider_instances p ON p.id=h.provider_instance_id
+   WHERE p.base_url=$1
+     AND h.status <> 'DECOMMISSIONED'
+   ORDER BY CASE WHEN h.status='ACTIVE' THEN 0 ELSE 1 END, h.created_at
+   LIMIT 1
+ `,[raw]);
+ if(!r.rowCount || !r.rows[0].address) return raw;
+ u.hostname=String(r.rows[0].address).replace(/^\[|\]$/g,'');
+ return u.toString().replace(/\/$/,'');
+}
+
 export class MarzbanProvider {
- private token=''; private tokenExpires=0;
- private resolved?:ProviderSecret;
+ private token=''; private tokenExpires=0; private resolved?:ProviderSecret; private effectiveUrl?:string;
  constructor(private readonly baseUrl:string, private readonly username='', private readonly password='') {}
  private async auth(){
   if(this.token && Date.now()<this.tokenExpires)return;
   this.resolved=this.resolved || await resolveProviderSecret(this.baseUrl,this.username,this.password);
+  this.effectiveUrl=this.effectiveUrl || await resolveBaseUrl(this.baseUrl);
   const body=new URLSearchParams({username:this.resolved.username,password:this.resolved.password,grant_type:'password'});
-  const r=await fetch(`${this.baseUrl.replace(/\/$/,'')}/api/admin/token`,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body});
+  const r=await fetch(`${this.effectiveUrl}/api/admin/token`,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body});
   if(!r.ok)throw new Error(`Marzban authentication failed (${r.status})`);
   const data=await r.json() as {access_token:string};
   this.token=data.access_token;
@@ -47,7 +77,7 @@ export class MarzbanProvider {
   const headers=new Headers(init.headers);
   headers.set('Authorization',`Bearer ${this.token}`);
   headers.set('content-type','application/json');
-  const r=await fetch(`${this.baseUrl.replace(/\/$/,'')}${path}`,{...init,headers});
+  const r=await fetch(`${this.effectiveUrl}${path}`,{...init,headers});
   if(r.status===401&&retry){this.token='';return this.request(path,init,false)}
   if(!r.ok){const text=await r.text();throw Object.assign(new Error(`Marzban ${r.status}: ${text.slice(0,300)}`),{status:r.status})}
   return r.status===204?null:r.json();
