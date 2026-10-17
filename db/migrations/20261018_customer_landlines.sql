@@ -1,6 +1,6 @@
 BEGIN;
 CREATE TABLE IF NOT EXISTS customer_landlines(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),customer_id uuid NOT NULL REFERENCES customers(id) ON DELETE CASCADE,number text NOT NULL,label text,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(customer_id,number));
-UPDATE customer_landlines SET number=regexp_replace(regexp_replace(regexp_replace(trim(number),'[[:space:]().-]+','','g'),'^\+20',''),' ^20','') WHERE number IS NOT NULL;
+UPDATE customer_landlines SET number=regexp_replace(regexp_replace(regexp_replace(trim(number),'[[:space:]().-]+','','g'),'^\+20',''),'^20','') WHERE number IS NOT NULL;
 UPDATE customer_landlines SET number='0'||number WHERE number !~ '^0' AND number ~ '^[0-9]+$';
 ALTER TABLE customer_landlines DROP CONSTRAINT IF EXISTS customer_landlines_number_format_ck;
 ALTER TABLE customer_landlines ADD CONSTRAINT customer_landlines_number_format_ck CHECK(number~'^0[0-9]{8,10}$');
