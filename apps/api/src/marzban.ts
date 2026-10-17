@@ -111,7 +111,7 @@ async function resolveBaseUrl(baseUrl: string, providerId?: string) {
   return u.toString().replace(/\/$/, '');
 }
 
-function timeoutSignal(existing?: AbortSignal) {
+function timeoutSignal(existing: AbortSignal | null | undefined) {
   if (existing) return existing;
   return AbortSignal.timeout(REQUEST_TIMEOUT_MS);
 }
@@ -121,10 +121,6 @@ function flattenInboundResponse(data: any): MarzbanInbound[] {
   for (const key of ['inbounds', 'items', 'data']) {
     if (Array.isArray(data?.[key])) return data[key] as MarzbanInbound[];
   }
-
-  // Marzban versions can expose inbounds grouped by protocol, e.g.
-  // { "VLESS": [...], "VMess": [...] }. Preserve the group protocol when
-  // individual entries do not repeat it.
   if (data && typeof data === 'object') {
     const flattened: MarzbanInbound[] = [];
     for (const [group, value] of Object.entries(data)) {
@@ -158,18 +154,9 @@ export class MarzbanProvider {
     this.resolved = this.resolved || await resolveProviderSecret(this.baseUrl, this.username, this.password, this.providerId);
     this.effectiveUrl = this.effectiveUrl || await resolveBaseUrl(this.baseUrl, this.providerId);
     if (!this.effectiveUrl) throw new Error('MARZBAN_BASE_URL_NOT_CONFIGURED');
-
     const body = new URLSearchParams({ username: this.resolved.username, password: this.resolved.password, grant_type: 'password' });
-    const r = await fetch(`${this.effectiveUrl}/api/admin/token`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-      body,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!r.ok) {
-      const text = await r.text();
-      throw Object.assign(new Error(`Marzban authentication failed (${r.status}): ${text.slice(0, 200)}`), { status: r.status });
-    }
+    const r = await fetch(`${this.effectiveUrl}/api/admin/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    if (!r.ok) { const text = await r.text(); throw Object.assign(new Error(`Marzban authentication failed (${r.status}): ${text.slice(0, 200)}`), { status: r.status }); }
     const data = await r.json() as { access_token?: string };
     if (!data.access_token) throw new Error('Marzban authentication returned no access token');
     this.token = data.access_token;
@@ -183,87 +170,28 @@ export class MarzbanProvider {
     headers.set('accept', 'application/json');
     if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
     const r = await fetch(`${this.effectiveUrl}${path}`, { ...init, headers, signal: timeoutSignal(init.signal) });
-    if (r.status === 401 && retry) {
-      this.token = '';
-      this.tokenExpires = 0;
-      return this.request(path, init, false);
-    }
-    if (!r.ok) {
-      const text = await r.text();
-      throw Object.assign(new Error(`Marzban ${r.status}: ${text.slice(0, 500)}`), { status: r.status });
-    }
+    if (r.status === 401 && retry) { this.token = ''; this.tokenExpires = 0; return this.request(path, init, false); }
+    if (!r.ok) { const text = await r.text(); throw Object.assign(new Error(`Marzban ${r.status}: ${text.slice(0, 500)}`), { status: r.status }); }
     return r.status === 204 ? null : r.json();
   }
 
   async getUser(username: string) {
-    try {
-      return await this.request(`/api/user/${encodeURIComponent(username)}`) as MarzbanUser;
-    } catch (e: any) {
-      if (e?.status === 404) return null;
-      throw e;
-    }
+    try { return await this.request(`/api/user/${encodeURIComponent(username)}`) as MarzbanUser; }
+    catch (e: any) { if (e?.status === 404) return null; throw e; }
+  }
+
+  async createOrUpdate(input: any): Promise<MarzbanUser> {
+    const existing = await this.getUser(input.username);
+    const payload = { username: input.username, proxies: { [input.protocol]: { id: input.uuid, flow: input.flow || '' } }, inbounds: { [input.protocol]: [input.inbound] }, expire: Math.floor(new Date(input.expireAt).getTime() / 1000), data_limit: Number(input.quotaBytes || 0) };
+    if (existing) return await this.request(`/api/user/${encodeURIComponent(input.username)}`, { method: 'PUT', body: JSON.stringify(payload) }) as MarzbanUser;
+    return await this.request('/api/user', { method: 'POST', body: JSON.stringify(payload) }) as MarzbanUser;
   }
 
   async listInbounds(): Promise<MarzbanInbound[]> {
-    const data = await this.request('/api/inbounds');
-    return flattenInboundResponse(data);
+    return flattenInboundResponse(await this.request('/api/inbounds'));
   }
 
-  async createOrUpdate(input: {
-    username: string;
-    uuid: string;
-    inbound: string;
-    expireAt: Date;
-    quotaBytes?: number | null;
-    protocol: 'vless' | 'vmess';
-    flow?: string;
-  }) {
-    const existing = await this.getUser(input.username);
-    const proxy = input.protocol === 'vless'
-      ? { vless: { id: input.uuid, flow: input.flow || '' } }
-      : { vmess: { id: input.uuid, alterId: 0 } };
-    const inbounds = input.protocol === 'vless' ? { vless: [input.inbound] } : { vmess: [input.inbound] };
-    const payload = {
-      username: input.username,
-      proxies: proxy,
-      inbounds,
-      expire: Math.floor(input.expireAt.getTime() / 1000),
-      data_limit: input.quotaBytes || 0,
-      data_limit_reset_strategy: 'no_reset',
-      status: 'active',
-    };
-
-    if (existing) {
-      await this.request(`/api/user/${encodeURIComponent(input.username)}`, { method: 'PUT', body: JSON.stringify(payload) });
-      return this.getUser(input.username);
-    }
-
-    try {
-      return await this.request('/api/user', { method: 'POST', body: JSON.stringify(payload) }) as MarzbanUser;
-    } catch (e: any) {
-      if (e?.status === 409) return this.getUser(input.username);
-      throw e;
-    }
-  }
-
-  async disable(username: string) {
-    return this.request(`/api/user/${encodeURIComponent(username)}`, { method: 'PUT', body: JSON.stringify({ status: 'disabled' }) });
-  }
-
-  async enable(username: string) {
-    return this.request(`/api/user/${encodeURIComponent(username)}`, { method: 'PUT', body: JSON.stringify({ status: 'active' }) });
-  }
-
-  async delete(username: string) {
-    return this.request(`/api/user/${encodeURIComponent(username)}`, { method: 'DELETE' });
-  }
-
-  async usage(username: string) {
-    return this.request(`/api/user/${encodeURIComponent(username)}/usage`) as Promise<any>;
-  }
-
-  async health() {
-    await this.request('/api/admin');
-    return { ok: true };
-  }
+  async disable(username: string) { await this.request(`/api/user/${encodeURIComponent(username)}`, { method: 'PUT', body: JSON.stringify({ status: 'disabled' }) }); }
+  async enable(username: string) { await this.request(`/api/user/${encodeURIComponent(username)}`, { method: 'PUT', body: JSON.stringify({ status: 'active' }) }); }
+  async delete(username: string) { const existing = await this.getUser(username); if (existing) await this.request(`/api/user/${encodeURIComponent(username)}`, { method: 'DELETE' }); }
 }
