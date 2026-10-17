@@ -1,0 +1,232 @@
+name: Apply platform service and router fixes
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Patch project
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('.')
+
+          # 1) Schema: manual services + encrypted original client link.
+          schema = root/'db/schema.sql'
+          s = schema.read_text()
+          s = s.replace(
+              "label text,status text NOT NULL DEFAULT 'PROVISIONING',suspend_reason text,origin_order_item_id uuid UNIQUE,created_at",
+              "label text,status text NOT NULL DEFAULT 'PROVISIONING',provisioning_mode text NOT NULL DEFAULT 'MANAGED' CHECK(provisioning_mode IN('MANAGED','MANUAL')),suspend_reason text,origin_order_item_id uuid UNIQUE,created_at"
+          )
+          s = s.replace(
+              "credential_key_id text NOT NULL,params jsonb NOT NULL DEFAULT '{}',created_at",
+              "credential_key_id text NOT NULL,params jsonb NOT NULL DEFAULT '{}',manual_link_enc bytea,created_at"
+          )
+          schema.write_text(s)
+
+          # 2) Migration for existing installations.
+          mig = root/'db/migrations/003_manual_services.sql'
+          mig.write_text("""ALTER TABLE services\n  ADD COLUMN IF NOT EXISTS provisioning_mode text NOT NULL DEFAULT 'MANAGED';\n\nALTER TABLE configs\n  ADD COLUMN IF NOT EXISTS manual_link_enc bytea;\n\nDO $$\nBEGIN\n  IF NOT EXISTS (\n    SELECT 1 FROM pg_constraint\n    WHERE conname='services_provisioning_mode_check'\n  ) THEN\n    ALTER TABLE services\n      ADD CONSTRAINT services_provisioning_mode_check\n      CHECK (provisioning_mode IN ('MANAGED','MANUAL'));\n  END IF;\nEND $$;\n\nCREATE INDEX IF NOT EXISTS services_provisioning_mode_idx\n  ON services(provisioning_mode);\n""")
+
+          # 3) API helpers and manual-service endpoint.
+          api = root/'apps/api/src/main.ts'
+          a = api.read_text()
+
+          marker = "function errorStatus(e: any) { return Number(e?.statusCode) || 500; }"
+          helper = r'''function parseManualClientLink(raw: string) {
+  const link = String(raw || '').trim();
+  if (!link) throw Object.assign(new Error('رابط الكونفيج مطلوب'), { statusCode: 400 });
+  if (link.startsWith('vless://')) {
+    let u: URL;
+    try { u = new URL(link); } catch { throw Object.assign(new Error('رابط VLESS غير صالح'), { statusCode: 400 }); }
+    const uuid = decodeURIComponent(u.username || '');
+    const port = Number(u.port);
+    if (!uuid || !u.hostname || !Number.isInteger(port) || port < 1 || port > 65535) throw Object.assign(new Error('رابط VLESS غير مكتمل'), { statusCode: 400 });
+    const params: Record<string, any> = {};
+    for (const k of ['type','security','sni','host','path','flow','fp','alpn','serviceName']) if (u.searchParams.get(k)) params[k] = u.searchParams.get(k);
+    return { protocol:'vless', uuid, address:u.hostname, port, transport:params.type || 'tcp', security:params.security || 'none', params };
+  }
+  if (link.startsWith('vmess://')) {
+    try {
+      const encoded = link.slice('vmess://'.length).replace(/-/g,'+').replace(/_/g,'/');
+      const padded = encoded + '='.repeat((4 - encoded.length % 4) % 4);
+      const obj = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+      const uuid = String(obj.id || obj.uuid || '');
+      const address = String(obj.add || obj.address || '');
+      const port = Number(obj.port);
+      if (!uuid || !address || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('incomplete');
+      const params: Record<string, any> = {};
+      for (const k of ['host','path','sni','flow','fp','alpn','serviceName']) if (obj[k]) params[k] = obj[k];
+      return { protocol:'vmess', uuid, address, port, transport:String(obj.net || 'tcp'), security:obj.tls ? 'tls' : 'none', params };
+    } catch { throw Object.assign(new Error('رابط VMess غير صالح'), { statusCode: 400 }); }
+  }
+  throw Object.assign(new Error('الرابط يجب أن يبدأ بـ vless:// أو vmess://'), { statusCode: 400 });
+}
+'''
+          if "function parseManualClientLink" not in a:
+              a = a.replace(marker, marker + "\n" + helper)
+
+          # Include router code and provisioning mode in admin services.
+          old_services = "SELECT s.id,s.public_code,s.label,s.status,s.created_at,c.name category,c.protocol,sub.status subscription_status,sub.current_period_end,sub.starts_at,sub.used_bytes,sub.quota_bytes,cu.public_code customer_code,cu.full_name customer_name,h.city,h.country,se.public_code endpoint_code FROM services s JOIN customers cu ON cu.id=s.customer_id JOIN config_categories c ON c.id=s.category_id LEFT JOIN subscriptions sub ON sub.service_id=s.id LEFT JOIN service_allocations sa ON sa.service_id=s.id AND sa.status='ACTIVE' LEFT JOIN server_endpoints se ON se.id=sa.endpoint_id LEFT JOIN hosts h ON h.id=se.host_id ORDER BY s.created_at DESC LIMIT 200"
+          new_services = "SELECT s.id,s.public_code,s.label,s.status,s.provisioning_mode,s.created_at,c.name category,c.protocol,sub.status subscription_status,sub.current_period_end,sub.starts_at,sub.used_bytes,sub.quota_bytes,cu.public_code customer_code,cu.full_name customer_name,r.public_code router_code,h.city,h.country,se.public_code endpoint_code FROM services s JOIN customers cu ON cu.id=s.customer_id JOIN config_categories c ON c.id=s.category_id LEFT JOIN subscriptions sub ON sub.service_id=s.id LEFT JOIN routers r ON r.id=s.router_id LEFT JOIN service_allocations sa ON sa.service_id=s.id AND sa.status='ACTIVE' LEFT JOIN server_endpoints se ON se.id=sa.endpoint_id LEFT JOIN hosts h ON h.id=se.host_id ORDER BY s.created_at DESC LIMIT 200"
+          if old_services in a:
+              a = a.replace(old_services, new_services)
+
+          # Manual service creation endpoint, placed before service actions.
+          service_marker = "  admin.post('/services/:id/action', async (req:any) => {"
+          manual_route = r'''  admin.post('/services/manual', async (req:any) => {
+    requirePermission(req,'services:write'); requireCsrf(req);
+    const b=req.body||{}; const customerId=String(b.customerId||''); const planId=String(b.planId||''); const routerId=b.routerId?String(b.routerId):null; const labelText=String(b.label||'').trim();
+    if(!customerId||!planId||!b.link) throw Object.assign(new Error('العميل والخطة والرابط مطلوبة'),{statusCode:400});
+    const customer=await db('SELECT id FROM customers WHERE id=$1 AND status<>\'DELETED\'',[customerId]); if(!customer.rowCount) throw Object.assign(new Error('العميل غير موجود'),{statusCode:404});
+    const plan=await db(`SELECT p.*,c.id category_id,c.protocol,c.name category_name FROM config_plans p JOIN config_categories c ON c.id=p.category_id WHERE p.id=$1 AND p.status='ACTIVE'`,[planId]); if(!plan.rowCount) throw Object.assign(new Error('الخطة غير موجودة أو غير نشطة'),{statusCode:400});
+    const p=plan.rows[0]; const parsed=parseManualClientLink(String(b.link));
+    if(parsed.protocol!==p.protocol) throw Object.assign(new Error(`الرابط ${parsed.protocol.toUpperCase()} لا يطابق بروتوكول الخطة ${p.protocol.toUpperCase()}`),{statusCode:400});
+    if(routerId){
+      const rr=await db(`SELECT r.id,r.customer_id,r.lifecycle_status FROM routers r WHERE r.id=$1`,[routerId]);
+      if(!rr.rowCount) throw Object.assign(new Error('الراوتر غير موجود'),{statusCode:404});
+      if(rr.rows[0].customer_id && rr.rows[0].customer_id!==customerId) throw Object.assign(new Error('الراوتر مرتبط بعميل آخر'),{statusCode:409});
+      if(['DECOMMISSIONED','REPLACED'].includes(rr.rows[0].lifecycle_status)) throw Object.assign(new Error('الراوتر غير صالح للربط'),{statusCode:400});
+      const live=await db(`SELECT id FROM services WHERE router_id=$1 AND status IN('PROVISIONING','ACTIVE','SUSPENDED')`,[routerId]);
+      if(live.rowCount) throw Object.assign(new Error('الراوتر مرتبط بخدمة أخرى بالفعل'),{statusCode:409});
+      if(!rr.rows[0].customer_id) await db(`UPDATE routers SET customer_id=$1,lifecycle_status=CASE WHEN lifecycle_status='IN_STOCK' THEN 'ASSIGNED' ELSE lifecycle_status END,updated_at=now() WHERE id=$2`,[customerId,routerId]);
+    }
+    const client=await pool.connect();
+    try{
+      await client.query('BEGIN');
+      const service=(await client.query(`INSERT INTO services(customer_id,category_id,plan_id,router_id,label,status,provisioning_mode) VALUES($1,$2,$3,$4,$5,'ACTIVE','MANUAL') RETURNING id,public_code`,[customerId,p.category_id,p.id,routerId,labelText||p.category_name+' - '+p.name])).rows[0];
+      const end=new Date(Date.now()+Number(p.duration_days)*86400000);
+      const sub=(await client.query(`INSERT INTO subscriptions(service_id,plan_id,status,starts_at,current_period_end,quota_bytes) VALUES($1,$2,'ACTIVE',now(),$3,$4) RETURNING id`,[service.id,p.id,end,p.quota_bytes])).rows[0];
+      await client.query(`INSERT INTO configs(service_id,version,status,protocol,transport,security,client_credential_enc,credential_key_id,params,manual_link_enc) VALUES($1,1,'CURRENT',$2,$3,$4,$5,'env-v1',$6,$7)`,[service.id,parsed.protocol,parsed.transport,parsed.security,encryptSecret(parsed.uuid),'env-v1',JSON.stringify({...parsed.params,address:parsed.address,port:parsed.port}),encryptSecret(String(b.link).trim())]);
+      await audit(client,req,'service.manual_created','services',service.id,{mode:'MANUAL',protocol:parsed.protocol,routerId},customerId);
+      await client.query('COMMIT');
+      return {id:service.id,public_code:service.public_code,subscriptionId:sub.id};
+    }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
+  });
+'''
+          if "admin.post('/services/manual'" not in a:
+              a = a.replace(service_marker, manual_route + service_marker)
+
+          # Router creation can optionally assign a customer.
+          old_router = "INSERT INTO routers(serial_number,device_identifier,model,hardware_revision,openwrt_version,firmware_version,lifecycle_status) VALUES($1,$2,$3,$4,$5,$6,'IN_STOCK') RETURNING *"
+          new_router = "INSERT INTO routers(serial_number,device_identifier,model,hardware_revision,openwrt_version,firmware_version,customer_id,lifecycle_status) VALUES($1,$2,$3,$4,$5,$6,$7,CASE WHEN $7 IS NULL THEN 'IN_STOCK' ELSE 'ASSIGNED' END) RETURNING *"
+          if old_router in a:
+              a = a.replace(old_router,new_router)
+              a = a.replace("[b.serialNumber,b.deviceIdentifier||null,b.model,b.hardwareRevision||null,b.openwrtVersion||null,b.firmwareVersion||null])).rows[0]; });", "[b.serialNumber,b.deviceIdentifier||null,b.model,b.hardwareRevision||null,b.openwrtVersion||null,b.firmwareVersion||null,b.customerId||null])).rows[0]; });", 1)
+
+          # Customer config: return encrypted original manual link directly; managed services keep existing generated-link logic.
+          old_config = "customer.get('/services/:id/config', async (req:any) => { const r=await db(`SELECT s.id,s.router_id,c.link_visibility,cfg.protocol,cfg.transport,cfg.security,cfg.client_credential_enc,cfg.params,e.port,h.address FROM services s JOIN config_categories c ON c.id=s.category_id JOIN configs cfg ON cfg.service_id=s.id AND cfg.status='CURRENT' JOIN service_allocations a ON a.service_id=s.id AND a.status='ACTIVE' JOIN server_endpoints e ON e.id=a.endpoint_id JOIN hosts h ON h.id=e.host_id WHERE s.id=$1 AND s.customer_id=$2`,[req.params.id,req.principal!.id]);if(!r.rowCount)throw Object.assign(new Error('Config غير متاح'),{statusCode:404});const row=r.rows[0];if(row.link_visibility==='NEVER'||(row.link_visibility==='STANDALONE_ONLY'&&row.router_id))throw Object.assign(new Error('الرابط غير متاح لهذه الخدمة'),{statusCode:403});const uuid=decryptSecret(row.client_credential_enc);let link='';if(row.protocol==='vless'){const q=new URLSearchParams();if(row.transport)q.set('type',row.transport);if(row.security)q.set('security',row.security);for(const k of ['sni','path','host','flow'])if(row.params?.[k])q.set(k,row.params[k]);link=`vless://${encodeURIComponent(uuid)}@${row.address}:${row.port}?${q.toString()}#CowboyBebop`;}else{const payload=Buffer.from(JSON.stringify({v:2,ps:'CowboyBebop',add:row.address,port:String(row.port),id:uuid,aid:0,net:row.transport||'tcp',type:'none',host:row.params?.host||'',path:row.params?.path||'',tls:row.security==='tls'?'tls':''})).toString('base64');link=`vmess://${payload}`;}const c=await pool.connect();try{await audit(c,req,'secret.revealed','configs',null,{serviceId:req.params.id},req.principal!.id);}finally{c.release();}return {link}; });"
+          new_config = r'''customer.get('/services/:id/config', async (req:any) => {
+    const r=await db(`SELECT s.id,s.router_id,c.link_visibility,cfg.protocol,cfg.transport,cfg.security,cfg.client_credential_enc,cfg.params,cfg.manual_link_enc FROM services s JOIN config_categories c ON c.id=s.category_id JOIN configs cfg ON cfg.service_id=s.id AND cfg.status='CURRENT' WHERE s.id=$1 AND s.customer_id=$2`,[req.params.id,req.principal!.id]);
+    if(!r.rowCount) throw Object.assign(new Error('Config غير متاح'),{statusCode:404});
+    const row=r.rows[0];
+    if(row.link_visibility==='NEVER'||(row.link_visibility==='STANDALONE_ONLY'&&row.router_id)) throw Object.assign(new Error('الرابط غير متاح لهذه الخدمة'),{statusCode:403});
+    let link='';
+    if(row.manual_link_enc){ link=decryptSecret(row.manual_link_enc); }
+    else {
+      const alloc=await db(`SELECT e.port,h.address FROM service_allocations a JOIN server_endpoints e ON e.id=a.endpoint_id JOIN hosts h ON h.id=e.host_id WHERE a.service_id=$1 AND a.status='ACTIVE'`,[req.params.id]);
+      if(!alloc.rowCount) throw Object.assign(new Error('Config غير متاح'),{statusCode:404});
+      const uuid=decryptSecret(row.client_credential_enc), address=alloc.rows[0].address, port=alloc.rows[0].port;
+      if(row.protocol==='vless'){const q=new URLSearchParams();if(row.transport)q.set('type',row.transport);if(row.security)q.set('security',row.security);for(const k of ['sni','path','host','flow'])if(row.params?.[k])q.set(k,row.params[k]);link=`vless://${encodeURIComponent(uuid)}@${address}:${port}?${q.toString()}#CowboyBebop`;}
+      else{const payload=Buffer.from(JSON.stringify({v:2,ps:'CowboyBebop',add:address,port:String(port),id:uuid,aid:0,net:row.transport||'tcp',type:'none',host:row.params?.host||'',path:row.params?.path||'',tls:row.security==='tls'?'tls':''})).toString('base64');link=`vmess://${payload}`;}
+    }
+    const c=await pool.connect();try{await audit(c,req,'secret.revealed','configs',null,{serviceId:req.params.id},req.principal!.id);}finally{c.release();}return {link};
+  });'''
+          if old_config in a:
+              a = a.replace(old_config,new_config)
+          else:
+              raise SystemExit('customer config route not found')
+
+          api.write_text(a)
+
+          # 4) Worker: manual services must never call Marzban; also use encrypted provider credentials.
+          worker = root/'apps/api/src/worker.ts'
+          w = worker.read_text()
+          w = w.replace(
+              "const row=(await pool.query(`SELECT s.id,s.public_code,s.status,p.duration_days,p.quota_bytes,sub.id subscription_id,sub.current_period_end,sub.status subscription_status,a.id allocation_id,a.status allocation_status,e.port,e.protocol,e.provider_inbound_tag,e.public_params,h.address,pa.id proxy_account_id,pa.external_username,pi.base_url FROM services s JOIN config_plans p ON p.id=s.plan_id JOIN subscriptions sub ON sub.service_id=s.id JOIN service_allocations a ON a.service_id=s.id AND a.status IN ('RESERVED','PROVISIONING','ACTIVE') JOIN server_endpoints e ON e.id=a.endpoint_id JOIN hosts h ON h.id=e.host_id JOIN proxy_accounts pa ON pa.service_id=s.id AND pa.status<>'DELETED' JOIN provider_instances pi ON pi.id=pa.provider_instance_id WHERE s.id=$1 ORDER BY a.created_at DESC LIMIT 1`,[job.subject_id])).rows[0];if(!row||row.status==='TERMINATED')return;",
+              "const row=(await pool.query(`SELECT s.id,s.public_code,s.status,s.provisioning_mode,p.duration_days,p.quota_bytes,sub.id subscription_id,sub.current_period_end,sub.status subscription_status,a.id allocation_id,a.status allocation_status,e.port,e.protocol,e.provider_inbound_tag,e.public_params,h.address,pa.id proxy_account_id,pa.external_username,pi.base_url,pi.credentials_enc FROM services s JOIN config_plans p ON p.id=s.plan_id JOIN subscriptions sub ON sub.service_id=s.id LEFT JOIN service_allocations a ON a.service_id=s.id AND a.status IN ('RESERVED','PROVISIONING','ACTIVE') LEFT JOIN server_endpoints e ON e.id=a.endpoint_id LEFT JOIN hosts h ON h.id=e.host_id LEFT JOIN proxy_accounts pa ON pa.service_id=s.id AND pa.status<>'DELETED' LEFT JOIN provider_instances pi ON pi.id=pa.provider_instance_id WHERE s.id=$1 ORDER BY a.created_at DESC LIMIT 1`,[job.subject_id])).rows[0];if(!row||row.status==='TERMINATED')return;if(row.provisioning_mode==='MANUAL')return;"
+          )
+          w = w.replace(
+              "const provider=new MarzbanProvider(row.base_url,process.env.MARZBAN_USERNAME||'',process.env.MARZBAN_PASSWORD||'');",
+              "if(!row.base_url||!row.credentials_enc) throw new Error('MARZBAN_PROVIDER_CREDENTIALS_MISSING'); const creds=JSON.parse(decrypt(row.credentials_enc)); const provider=new MarzbanProvider(row.base_url,creds.username,creds.password);"
+          )
+          w = w.replace(
+              "async function renewService(job:any){const base=(await pool.query(`SELECT oi.id,oi.target_service_id,p.duration_days,p.quota_bytes,sub.id subscription_id,sub.current_period_end,pa.external_username,pi.base_url,cfg.protocol,cfg.params,cfg.client_credential_enc,e.provider_inbound_tag FROM order_items oi JOIN config_plans p ON p.id=oi.plan_id JOIN subscriptions sub ON sub.service_id=oi.target_service_id JOIN proxy_accounts pa ON pa.service_id=oi.target_service_id JOIN provider_instances pi ON pi.id=pa.provider_instance_id JOIN configs cfg ON cfg.service_id=oi.target_service_id AND cfg.status='CURRENT' JOIN service_allocations a ON a.service_id=oi.target_service_id AND a.status='ACTIVE' JOIN server_endpoints e ON e.id=a.endpoint_id WHERE oi.id=$1`,[job.subject_id])).rows[0];if(!base)return;",
+              "async function renewService(job:any){const base=(await pool.query(`SELECT oi.id,oi.target_service_id,s.provisioning_mode,p.duration_days,p.quota_bytes,sub.id subscription_id,sub.current_period_end,pa.external_username,pi.base_url,pi.credentials_enc,cfg.protocol,cfg.params,cfg.client_credential_enc,e.provider_inbound_tag FROM order_items oi JOIN services s ON s.id=oi.target_service_id JOIN config_plans p ON p.id=oi.plan_id JOIN subscriptions sub ON sub.service_id=oi.target_service_id LEFT JOIN proxy_accounts pa ON pa.service_id=oi.target_service_id AND pa.status<>'DELETED' LEFT JOIN provider_instances pi ON pi.id=pa.provider_instance_id LEFT JOIN configs cfg ON cfg.service_id=oi.target_service_id AND cfg.status='CURRENT' LEFT JOIN service_allocations a ON a.service_id=oi.target_service_id AND a.status='ACTIVE' LEFT JOIN server_endpoints e ON e.id=a.endpoint_id WHERE oi.id=$1`,[job.subject_id])).rows[0];if(!base)return;"
+          )
+          old_renew_tail = "await pool.query(`UPDATE subscriptions SET status='ACTIVE',current_period_end=$1,quota_bytes=$2,grace_until=NULL,updated_at=now() WHERE id=$3`,[end,base.quota_bytes,base.subscription_id]);await new MarzbanProvider(base.base_url,process.env.MARZBAN_USERNAME||'',process.env.MARZBAN_PASSWORD||'').createOrUpdate({username:base.external_username,uuid:decrypt(base.client_credential_enc),inbound:base.provider_inbound_tag,expireAt:end,quotaBytes:base.quota_bytes,protocol:base.protocol,flow:base.params?.flow});await pool.query(`UPDATE order_items SET fulfillment_status='FULFILLED',fulfilled_at=now() WHERE id=$1`,[base.id]);}"
+          new_renew_tail = "await pool.query(`UPDATE subscriptions SET status='ACTIVE',current_period_end=$1,quota_bytes=$2,grace_until=NULL,updated_at=now() WHERE id=$3`,[end,base.quota_bytes,base.subscription_id]);if(base.provisioning_mode!=='MANUAL'){if(!base.base_url||!base.credentials_enc) throw new Error('MARZBAN_PROVIDER_CREDENTIALS_MISSING');const creds=JSON.parse(decrypt(base.credentials_enc));await new MarzbanProvider(base.base_url,creds.username,creds.password).createOrUpdate({username:base.external_username,uuid:decrypt(base.client_credential_enc),inbound:base.provider_inbound_tag,expireAt:end,quotaBytes:base.quota_bytes,protocol:base.protocol,flow:base.params?.flow});}await pool.query(`UPDATE order_items SET fulfillment_status='FULFILLED',fulfilled_at=now() WHERE id=$1`,[base.id]);}"
+          if old_renew_tail in w:
+              w=w.replace(old_renew_tail,new_renew_tail)
+          # Make service actions safe for manual services and use provider credentials from DB.
+          old_action = "const row=(await pool.query(`SELECT s.id,s.status,pa.external_username,pi.base_url FROM services s JOIN proxy_accounts pa ON pa.service_id=s.id AND pa.status='ACTIVE' JOIN provider_instances pi ON pi.id=pa.provider_instance_id WHERE s.id=$1`,[job.subject_id])).rows[0];if(!row)return;const provider=new MarzbanProvider(row.base_url,process.env.MARZBAN_USERNAME||'',process.env.MARZBAN_PASSWORD||'');"
+          new_action = "const row=(await pool.query(`SELECT s.id,s.status,s.provisioning_mode,pa.external_username,pi.base_url,pi.credentials_enc FROM services s LEFT JOIN proxy_accounts pa ON pa.service_id=s.id AND pa.status='ACTIVE' LEFT JOIN provider_instances pi ON pi.id=pa.provider_instance_id WHERE s.id=$1`,[job.subject_id])).rows[0];if(!row)return;if(row.provisioning_mode==='MANUAL')return;if(!row.base_url||!row.credentials_enc||!row.external_username)throw new Error('MARZBAN_PROVIDER_CREDENTIALS_MISSING');const creds=JSON.parse(decrypt(row.credentials_enc));const provider=new MarzbanProvider(row.base_url,creds.username,creds.password);"
+          if old_action in w:
+              w=w.replace(old_action,new_action)
+          worker.write_text(w)
+
+          # 5) Web UI: catalog CRUD, manual service creation, router customer assignment.
+          web = root/'apps/web/src/app.tsx'
+          x = web.read_text()
+
+          old_catalog = re.search(r"function CatalogPage\(\).*?\nfunction SettingsPage", x, re.S)
+          if not old_catalog:
+              raise SystemExit('CatalogPage block not found')
+          new_catalog = r'''function CatalogPage(){const[d,setD]=useState<any>({categories:[],plans:[],routerProducts:[]});const[error,setError]=useState('');const[modal,setModal]=useState<'category'|'plan'|'router'|null>(null);const load=()=>void api('/api/v1/admin/catalog').then(setD).catch(e=>setError(e.message));useEffect(()=>{load();const id=window.setInterval(load,15000);return()=>window.clearInterval(id)},[]);return <div className="page"><Heading title="الكتالوج" sub="الفئات والخطط ومنتجات الراوتر — ويمكنك إدارتها من هنا."/><div className="toolbar"><div/><div className="toolbar-actions"><button className="primary-button" onClick={()=>setModal('category')}><Plus size={15}/> فئة</button><button className="secondary-button" onClick={()=>setModal('plan')}><Plus size={15}/> خطة</button><button className="secondary-button" onClick={()=>setModal('router')}><Plus size={15}/> منتج راوتر</button></div></div><div className="three-grid"><section className="panel"><h2>الفئات</h2>{d.categories.length?d.categories.map((c:any)=><div className="list-row" key={c.id}><div><b>{c.name}</b><small>{c.slug} · {c.protocol} · {c.link_visibility||'STANDALONE_ONLY'}</small></div><span className="badge">{label(c.status)}</span></div>):<p>لا توجد فئات.</p>}</section><section className="panel"><h2>الخطط</h2>{d.plans.length?d.plans.map((p:any)=><div className="list-row" key={p.id}><div><b>{p.name}</b><small>{p.category_name} · {p.duration_days} يوم</small></div><strong>{money(p.price_minor,p.currency)}</strong></div>):<p>لا توجد خطط.</p>}</section><section className="panel"><h2>منتجات الراوتر</h2>{d.routerProducts.length?d.routerProducts.map((p:any)=><div className="list-row" key={p.id}><div><b>{p.name}</b><small>{p.sku} · {p.model}</small></div><strong>{money(p.price_minor,p.currency)}</strong></div>):<p>لا توجد منتجات.</p>}</section></div>{error&&<div className="alert error">{error}</div>}<button className="secondary-button" onClick={load}><RefreshCw size={15}/> تحديث</button>{modal==='category'&&<CategoryForm categories={d.categories} onClose={()=>setModal(null)} onDone={()=>{setModal(null);load()}}/>}{modal==='plan'&&<PlanForm categories={d.categories} onClose={()=>setModal(null)} onDone={()=>{setModal(null);load()}}/>}{modal==='router'&&<RouterProductForm onClose={()=>setModal(null)} onDone={()=>{setModal(null);load()}}/>}</div>}
+function CategoryForm({onClose,onDone}:{categories:any[];onClose:()=>void;onDone:()=>void}){const[v,setV]=useState<any>({protocol:'vless',routerCompatible:true,status:'ACTIVE'});const[error,setError]=useState('');const save=async(e:FormEvent)=>{e.preventDefault();try{await api('/api/v1/admin/catalog/categories',{method:'POST',body:JSON.stringify({...v,routerCompatible:true})});onDone()}catch(e:any){setError(e.message)}};return <Modal title="إضافة فئة" onClose={onClose}><form onSubmit={save}><Field label="اسم الفئة" value={v.name||''} onChange={x=>setV({...v,name:x})}/><Field label="Slug" value={v.slug||''} onChange={x=>setV({...v,slug:x})}/><Field label="الوصف" value={v.description||''} onChange={x=>setV({...v,description:x})} required={false}/><label>البروتوكول<select value={v.protocol} onChange={e=>setV({...v,protocol:e.target.value})}><option value="vless">VLESS</option><option value="vmess">VMess</option></select></label><label>حالة الفئة<select value={v.status} onChange={e=>setV({...v,status:e.target.value})}><option value="ACTIVE">نشط</option><option value="DRAFT">مسودة</option><option value="INACTIVE">غير نشط</option></select></label>{error&&<div className="alert error">{error}</div>}<button className="primary-button full">حفظ الفئة</button></form></Modal>}
+function PlanForm({categories,onClose,onDone}:{categories:any[];onClose:()=>void;onDone:()=>void}){const[v,setV]=useState<any>({durationDays:30,price:50});const[error,setError]=useState('');const save=async(e:FormEvent)=>{e.preventDefault();try{await api('/api/v1/admin/catalog/plans',{method:'POST',body:JSON.stringify({categoryId:v.categoryId,name:v.name,durationDays:Number(v.durationDays),priceMinor:Math.round(Number(v.price)*100),currency:'EGP',quotaBytes:v.quotaGb?Math.round(Number(v.quotaGb)*1024*1024*1024):null})});onDone()}catch(e:any){setError(e.message)}};return <Modal title="إضافة خطة" onClose={onClose}><form onSubmit={save}><label>الفئة<select value={v.categoryId||''} onChange={e=>setV({...v,categoryId:e.target.value})} required><option value="">اختر الفئة</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name} · {c.protocol}</option>)}</select></label><Field label="اسم الخطة" value={v.name||''} onChange={x=>setV({...v,name:x})}/><Field label="المدة بالأيام" value={v.durationDays} onChange={x=>setV({...v,durationDays:x})} inputMode="numeric"/><Field label="السعر بالجنيه" value={v.price} onChange={x=>setV({...v,price:x})} inputMode="decimal"/><Field label="الحصة GB" value={v.quotaGb||''} onChange={x=>setV({...v,quotaGb:x})} required={false} inputMode="decimal"/>{error&&<div className="alert error">{error}</div>}<button className="primary-button full">حفظ الخطة</button></form></Modal>}
+function RouterProductForm({onClose,onDone}:{onClose:()=>void;onDone:()=>void}){const[v,setV]=useState<any>({});const[error,setError]=useState('');const save=async(e:FormEvent)=>{e.preventDefault();try{await api('/api/v1/admin/catalog/router-products',{method:'POST',body:JSON.stringify({sku:v.sku,name:v.name,model:v.model,priceMinor:Math.round(Number(v.price)*100),currency:'EGP'})});onDone()}catch(e:any){setError(e.message)}};return <Modal title="إضافة منتج راوتر" onClose={onClose}><form onSubmit={save}><Field label="SKU" value={v.sku||''} onChange={x=>setV({...v,sku:x})}/><Field label="الاسم" value={v.name||''} onChange={x=>setV({...v,name:x})}/><Field label="الموديل" value={v.model||''} onChange={x=>setV({...v,model:x})}/><Field label="السعر بالجنيه" value={v.price||''} onChange={x=>setV({...v,price:x})} inputMode="decimal"/>{error&&<div className="alert error">{error}</div>}<button className="primary-button full">حفظ المنتج</button></form></Modal>}
+function SettingsPage'''
+          x = x[:old_catalog.start()] + new_catalog + x[old_catalog.end()-len("function SettingsPage"):]
+
+          # Replace Kind/meta/ResourcePage block up to CustomerForm.
+          block = re.search(r"type Kind='customers'.*?\nfunction CustomerForm", x, re.S)
+          if not block:
+              raise SystemExit('ResourcePage block not found')
+          new_block = r'''type Kind='customers'|'services'|'subscriptions'|'routers'|'servers'|'orders'|'payments'|'jobs'|'audit';
+const meta:Record<Kind,{title:string;endpoint:string;cols:string[];keys:string[]}>={customers:{title:'العملاء',endpoint:'/api/v1/admin/customers',cols:['الكود','الاسم','البريد','الهاتف','التحقق','الحالة','المدينة'],keys:['public_code','full_name','email','mobile_phone','email_verified_at','status','city']},services:{title:'الخدمات',endpoint:'/api/v1/admin/services',cols:['الكود','العميل','الفئة','البروتوكول','الوضع','الراوتر','الحالة','الاشتراك','الانتهاء','Endpoint'],keys:['public_code','customer_name','category','protocol','provisioning_mode','router_code','status','subscription_status','current_period_end','endpoint_code']},subscriptions:{title:'الاشتراكات',endpoint:'/api/v1/admin/subscriptions',cols:['الخدمة','العميل','الفئة','الحالة','بداية','الانتهاء','الاستخدام'],keys:['public_code','customer_name','category','subscription_status','starts_at','current_period_end','used_bytes']},routers:{title:'الراوترات',endpoint:'/api/v1/admin/routers',cols:['Router ID','Serial','الموديل','العميل','الدورة','الاتصال','آخر ظهور'],keys:['public_code','serial_number','model','customer_name','lifecycle_status','connectivity','last_seen_at']},servers:{title:'الخوادم',endpoint:'/api/v1/admin/servers',cols:['الخادم','العنوان','المزوّد','الحالة','الصحة','النقاط'],keys:['name','address','provider_name','status','health_status','endpoint_count']},orders:{title:'الطلبات',endpoint:'/api/v1/admin/orders',cols:['الطلب','العميل','العناصر','الإجمالي','الحالة','التاريخ'],keys:['public_code','customer_name','item_count','total_minor','status','created_at']},payments:{title:'المدفوعات',endpoint:'/api/v1/admin/payments',cols:['الدفع','الطلب','العميل','المبلغ','الطريقة','الحالة'],keys:['id','order_code','customer_name','amount_minor','method','status']},jobs:{title:'المهام',endpoint:'/api/v1/admin/jobs',cols:['المهمة','النوع','الحالة','المحاولات','الخطأ','التاريخ'],keys:['id','type','state','attempts','last_error','created_at']},audit:{title:'التدقيق',endpoint:'/api/v1/admin/audit-logs',cols:['الوقت','الإجراء','الكيان','المنفذ','المعرف'],keys:['occurred_at','action','entity_type','actor_type','entity_id']}};
+function formatBytes(v:any){const n=Number(v||0);if(!n)return'0 B';const u=['B','KB','MB','GB','TB'];const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),u.length-1);return`${(n/Math.pow(1024,i)).toFixed(i?1:0)} ${u[i]}`}
+function ResourcePage({kind}:{kind:Kind}){const m=meta[kind];const[rows,setRows]=useState<any[]>([]);const[q,setQ]=useState('');const[open,setOpen]=useState(false);const[error,setError]=useState('');const[busy,setBusy]=useState(false);const load=async()=>{setBusy(true);setError('');try{const x=await api(m.endpoint+(q&&kind!=='subscriptions'?`?q=${encodeURIComponent(q)}`:''));let list=Array.isArray(x)?x:[];if(kind==='subscriptions')list=list.filter((r:any)=>r.subscription_status);if(q)list=list.filter((r:any)=>JSON.stringify(r).toLowerCase().includes(q.toLowerCase()));setRows(list)}catch(e:any){setError(e.message)}finally{setBusy(false)}};useEffect(()=>{void load();const id=window.setInterval(()=>void load(),15000);return()=>window.clearInterval(id)},[q]);const add=kind==='customers'||kind==='routers'||kind==='servers'||kind==='services';const addText=kind==='customers'?'إضافة عميل':kind==='routers'?'تسجيل راوتر':kind==='servers'?'إضافة خادم':'إضافة خدمة يدوية';return <div className="page"><Heading title={m.title} sub={kind==='services'?'أضف خدمة موجودة مسبقًا عبر VLESS/VMess أو راقب الخدمات المشتراة.':'بيانات حقيقية من الـAPI.'} onAdd={add?()=>setOpen(true):undefined} addText={addText}/><section className="panel table-panel"><div className="toolbar"><label className="search wide"><Search size={16}/><input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>e.key==='Enter'&&load()} placeholder="بحث..."/></label><button className="secondary-button" type="button" onClick={()=>void load()} disabled={busy}><RefreshCw size={15}/> تحديث</button></div>{error&&<div className="alert error">{error}</div>}<div className="table-wrap"><table><thead><tr>{m.cols.map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{rows.length===0?<tr><td className="empty" colSpan={m.cols.length}>{busy?'جارٍ التحميل...':'لا توجد بيانات'}</td></tr>:rows.map((r,i)=><tr key={r.id||i}>{m.keys.map(k=><td key={k}>{k==='email_verified_at'?(r[k]?'مؤكد':'غير مؤكد'):k.includes('minor')?money(r[k]):k==='used_bytes'?formatBytes(r[k]):k.endsWith('_at')||['starts_at','current_period_end','last_seen_at','created_at'].includes(k)?date(r[k]):['status','connectivity','state','lifecycle_status','subscription_status','health_status','provisioning_mode'].includes(k)?<span className="badge">{k==='provisioning_mode'?(r[k]==='MANUAL'?'يدوي':'آلي'):label(r[k])}</span>:String(r[k]??'—')}</td>)}</tr>)}</tbody></table></div></section>{open&&kind==='customers'&&<CustomerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);void load()}}/>}{open&&kind==='routers'&&<RouterForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);void load()}}/>}{open&&kind==='servers'&&<ServerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);void load()}}/>}{open&&kind==='services'&&<ManualServiceForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);void load()}}/>}</div>}
+function CustomerForm({onClose,onDone}:{onClose:()=>void;onDone:()=>void}){const[v,setV]=useState<any>({});const[error,setError]=useState('');const save=async(e:FormEvent)=>{e.preventDefault();try{await api('/api/v1/admin/customers',{method:'POST',body:JSON.stringify(v)});onDone()}catch(e:any){setError(e.message)}};return <Modal title="إضافة عميل" onClose={onClose}><form onSubmit={save}><Field label="الاسم الكامل" value={v.fullName||''} onChange={x=>setV({...v,fullName:x})}/><Field label="البريد" value={v.email||''} onChange={x=>setV({...v,email:x})} type="email"/><Field label="الهاتف" value={v.mobilePhone||''} onChange={x=>setV({...v,mobilePhone:x})}/><Field label="المدينة" value={v.city||''} onChange={x=>setV({...v,city:x})}/><Field label="المحافظة" value={v.governorate||''} onChange={x=>setV({...v,governorate:x})} required={false}/>{error&&<div className="alert error">{error}</div>}<button className="primary-button full">حفظ العميل</button></form></Modal>}
+function RouterForm({onClose,onDone}:{onClose:()=>void;onDone:()=>void}){const[v,setV]=useState<any>({});const[customers,setCustomers]=useState<any[]>([]);const[error,setError]=useState('');useEffect(()=>{void api('/api/v1/admin/customers').then(x=>setCustomers(Array.isArray(x)?x:[])).catch(e=>setError(e.message))},[]);const save=async(e:FormEvent)=>{e.preventDefault();try{await api('/api/v1/admin/routers',{method:'POST',body:JSON.stringify(v)});onDone()}catch(e:any){setError(e.message)}};return <Modal title="تسجيل راوتر" onClose={onClose}><form onSubmit={save}><Field label="Serial Number" value={v.serialNumber||''} onChange={x=>setV({...v,serialNumber:x})}/><Field label="Device ID" value={v.deviceIdentifier||''} onChange={x=>setV({...v,deviceIdentifier:x})} required={false}/><Field label="Model" value={v.model||''} onChange={x=>setV({...v,model:x})}/><Field label="Firmware" value={v.firmwareVersion||''} onChange={x=>setV({...v,firmwareVersion:x})} required={false}/><label>العميل (اختياري)<select value={v.customerId||''} onChange={e=>setV({...v,customerId:e.target.value||null})}><option value="">بدون عميل — الراوتر في المخزن</option>{customers.map(c=><option key={c.id} value={c.id}>{c.full_name} · {c.public_code}</option>)}</select></label>{error&&<div className="alert error">{error}</div>}<button className="primary-button full">حفظ الراوتر</button></form></Modal>}
+function ManualServiceForm({onClose,onDone}:{onClose:()=>void;onDone:()=>void}){const[v,setV]=useState<any>({});const[customers,setCustomers]=useState<any[]>([]);const[catalog,setCatalog]=useState<any>({categories:[],plans:[]});const[routers,setRouters]=useState<any[]>([]);const[error,setError]=useState('');useEffect(()=>{void Promise.all([api('/api/v1/admin/customers'),api('/api/v1/admin/catalog'),api('/api/v1/admin/routers')]).then(([c,k,r])=>{setCustomers(c||[]);setCatalog(k||{});setRouters(r||[])}).catch(e=>setError(e.message))},[]);const plans=(catalog.plans||[]).filter((p:any)=>p.status==='ACTIVE'&&(!v.protocol||p.protocol===v.protocol));const selectedCustomer=customers.find(c=>c.id===v.customerId);const customerRouters=routers.filter(r=>(!r.customer_id||r.customer_id===v.customerId)&&!['DECOMMISSIONED','REPLACED'].includes(r.lifecycle_status));const save=async(e:FormEvent)=>{e.preventDefault();try{await api('/api/v1/admin/services/manual',{method:'POST',body:JSON.stringify(v)});onDone()}catch(e:any){setError(e.message)}};return <Modal title="إضافة خدمة يدوية" onClose={onClose}><form onSubmit={save}><label>العميل<select value={v.customerId||''} onChange={e=>setV({...v,customerId:e.target.value,planId:'',routerId:''})} required><option value="">اختر العميل</option>{customers.map(c=><option key={c.id} value={c.id}>{c.full_name} · {c.public_code}</option>)}</select></label><label>الخطة<select value={v.planId||''} onChange={e=>{const p=plans.find((x:any)=>x.id===e.target.value);setV({...v,planId:e.target.value,protocol:p?.protocol||v.protocol})}} required><option value="">اختر الخطة</option>{plans.map(p=><option key={p.id} value={p.id}>{p.category_name} · {p.name} · {p.protocol} · {money(p.price_minor,p.currency)}</option>)}</select></label><label>الراوتر (اختياري)<select value={v.routerId||''} onChange={e=>setV({...v,routerId:e.target.value||null})}><option value="">Standalone — بدون راوتر</option>{customerRouters.map(r=><option key={r.id} value={r.id}>{r.public_code} · {r.model} · {r.customer_name||'بدون عميل'}</option>)}</select></label><Field label="اسم الخدمة" value={v.label||''} onChange={x=>setV({...v,label:x})} required={false}/><label>رابط VLESS / VMess<textarea className="link-input" value={v.link||''} onChange={e=>setV({...v,link:e.target.value})} placeholder="vless://... أو vmess://..." required/></label>{selectedCustomer&&<div className="alert success">سيتم إنشاء الخدمة للعميل {selectedCustomer.full_name}. الربط بالراوتر اختياري.</div>}{error&&<div className="alert error">{error}</div>}<button className="primary-button full">إنشاء الخدمة وتفعيل الاشتراك</button></form></Modal>}
+function ServerForm({onClose,onDone}:{onClose:()=>void;onDone:()=>void}){const[v,setV]=useState<any>({});const[providers,setProviders]=useState<any[]>([]);const[error,setError]=useState('');useEffect(()=>{void api('/api/v1/admin/provider-instances').then(x=>setProviders(Array.isArray(x)?x:[])).catch(e=>setError(e.message))},[]);const save=async(e:FormEvent)=>{e.preventDefault();try{await api('/api/v1/admin/servers/hosts',{method:'POST',body:JSON.stringify(v)});onDone()}catch(e:any){setError(e.message)}};return <Modal title="إضافة خادم" onClose={onClose}><form onSubmit={save}><Field label="اسم الخادم" value={v.name||''} onChange={x=>setV({...v,name:x})}/><Field label="العنوان" value={v.address||''} onChange={x=>setV({...v,address:x})}/><Field label="المدينة" value={v.city||''} onChange={x=>setV({...v,city:x})} required={false}/><Field label="المزوّد" value={v.hostingProvider||''} onChange={x=>setV({...v,hostingProvider:x})} required={false}/><label>Marzban Provider<select value={v.providerInstanceId||''} onChange={e=>setV({...v,providerInstanceId:e.target.value})} required><option value="">اختر المزود</option>{providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>{error&&<div className="alert error">{error}</div>}<button className="primary-button full">حفظ الخادم</button></form></Modal>}
+function SettingsPage'''
+          x = x[:block.start()] + new_block + x[block.end()-len("function CustomerForm"):]
+
+          # Add textarea/select styling.
+          css = root/'apps/web/src/styles.css'
+          c = css.read_text()
+          if '.modal textarea' not in c:
+              c += "\n.modal textarea{width:100%;min-height:110px;margin-top:6px;border:1px solid var(--line);border-radius:9px;padding:10px 11px;outline:none;font-size:10px;background:#fff;resize:vertical;direction:ltr;text-align:left}.modal textarea:focus{border-color:#9fb5ec;box-shadow:0 0 0 3px #4f7df012}.toolbar-actions{display:flex;gap:8px;align-items:center}.three-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}\n@media(max-width:1050px){.three-grid{grid-template-columns:1fr 1fr}}@media(max-width:760px){.three-grid{grid-template-columns:1fr}.toolbar-actions{width:100%;flex-wrap:wrap}}\n"
+          css.write_text(c)
+
+          # Ensure schema/manual service migration is represented in CI order; CI runs all SQL migrations explicitly.
+          print('patch complete')
+          PY
+
+      - name: Verify
+        run: |
+          npm install
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Commit and clean workflow
+        run: |
+          rm -f .github/workflows/apply-platform-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add db/schema.sql db/migrations/003_manual_services.sql apps/api/src/main.ts apps/api/src/worker.ts apps/web/src/app.tsx apps/web/src/styles.css .github/workflows/apply-platform-fix.yml
+          git commit -m "feat: add manual services and optional router binding" || exit 0
+          git push origin main
