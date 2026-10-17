@@ -2,6 +2,25 @@ import { Pool } from 'pg';
 import crypto from 'node:crypto';
 
 export type MarzbanUser = { username:string; status?:string; expire?:number; data_limit?:number; used_traffic?:number; subscription_url?:string; links?:string[]; proxies?:Record<string,unknown>; inbounds?:Record<string,string[]> };
+export type MarzbanInbound = {
+  tag?: string;
+  port?: number;
+  protocol?: string;
+  listen?: string;
+  enable?: boolean;
+  network?: string;
+  transport?: string;
+  security?: string;
+  tls?: string;
+  sni?: string | string[];
+  host?: string | string[];
+  path?: string;
+  serviceName?: string;
+  pbk?: string;
+  sid?: string | string[];
+  spx?: string;
+  [key:string]: unknown;
+};
 type ProviderSecret = { username:string; password:string };
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -32,12 +51,6 @@ async function resolveProviderSecret(baseUrl:string, username?:string, password?
  return parsed;
 }
 
-/**
- * Production is native systemd, while Marzban may have been configured with a
- * Docker-only hostname such as http://marzban:8080. Resolve that alias through
- * the host attached to the same provider instance. Public/domain URLs are left
- * untouched.
- */
 async function resolveBaseUrl(baseUrl:string){
  const raw=String(baseUrl||'').trim().replace(/\/$/,'');
  if(!raw) return raw;
@@ -83,6 +96,14 @@ export class MarzbanProvider {
   return r.status===204?null:r.json();
  }
  async getUser(username:string){try{return await this.request(`/api/user/${encodeURIComponent(username)}`) as MarzbanUser}catch(e:any){if(e.status===404)return null;throw e}}
+ async listInbounds():Promise<MarzbanInbound[]>{
+  const data=await this.request('/api/inbounds');
+  if(Array.isArray(data)) return data as MarzbanInbound[];
+  if(Array.isArray(data?.inbounds)) return data.inbounds as MarzbanInbound[];
+  if(Array.isArray(data?.items)) return data.items as MarzbanInbound[];
+  if(Array.isArray(data?.data)) return data.data as MarzbanInbound[];
+  return [];
+ }
  async createOrUpdate(input:{username:string;uuid:string;inbound:string;expireAt:Date;quotaBytes?:number|null;protocol:'vless'|'vmess';flow?:string}){
   const existing=await this.getUser(input.username);
   const proxy=input.protocol==='vless'?{vless:{id:input.uuid,flow:input.flow||''}}:{vmess:{id:input.uuid,alterId:0}};
