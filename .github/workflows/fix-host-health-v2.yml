@@ -1,0 +1,71 @@
+name: Fix host health v2
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Repair source
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          main = Path('apps/api/src/main.ts')
+          text = main.read_text()
+          marker = "import { MarzbanProvider } from './marzban.js';"
+          start = text.find(marker)
+          end = text.find('\nconst app =', start)
+          if start >= 0 and end > start:
+              text = text[:start] + text[start:end].replace('\\n', '\n') + text[end:]
+          if 'async function refreshInfrastructureHealth()' not in text:
+              insert = """\n\nasync function refreshInfrastructureHealth() {\n  const r = await db(`SELECT h.id,h.provider_instance_id,p.base_url,p.status provider_status FROM hosts h JOIN provider_instances p ON p.id=h.provider_instance_id WHERE h.status <> 'DECOMMISSIONED'`);\n  for (const host of r.rows) {\n    const checkedAt = new Date();\n    let health: 'HEALTHY'|'DEGRADED'|'DOWN' = 'HEALTHY';\n    try {\n      if (host.provider_status !== 'ACTIVE') throw new Error('provider disabled');\n      await new MarzbanProvider(host.base_url).health();\n      await db('UPDATE provider_instances SET last_ok_at=now(),updated_at=now() WHERE id=$1',[host.provider_instance_id]);\n    } catch {\n      health = 'DOWN';\n    }\n    await db('UPDATE hosts SET health_status=$1,last_health_check_at=$2,updated_at=now() WHERE id=$3',[health,checkedAt,host.id]);\n    await db('UPDATE server_endpoints SET health_status=$1,last_health_check_at=$2 WHERE host_id=$3',[health,checkedAt,host.id]);\n  }\n}\n"""
+              text = text.replace(marker, marker + insert, 1)
+          if 'void refreshInfrastructureHealth().catch' not in text:
+              needle = '  await seed();'
+              if needle in text:
+                  text = text.replace(needle, needle + "\n  void refreshInfrastructureHealth().catch((error) => app.log.error({ error }, 'initial infrastructure health check failed'));\n  setInterval(() => void refreshInfrastructureHealth().catch((error) => app.log.error({ error }, 'infrastructure health check failed')), 30000);", 1)
+          main.write_text(text)
+
+          web = Path('apps/web/src/app.tsx')
+          w = web.read_text()
+          if 'function validateHostAddress' not in w:
+              helper = """\nfunction validateHostAddress(value:string){\n  const address=value.trim();\n  if(!address) throw new Error('عنوان الخادم مطلوب');\n  if(address.includes('://')) throw new Error('اكتب IP أو hostname فقط بدون http:// أو https://');\n  if(address.includes(':') && !/^\\[[0-9a-fA-F:]+\\]$/.test(address)) throw new Error('اكتب IP أو hostname فقط. بورت Marzban موجود داخل الـProvider.');\n  return address;\n}\n"""
+              w = w.replace("function Field({label:txt", helper + "\nfunction Field({label:txt", 1)
+          fs = w.find('function ServerForm')
+          if fs >= 0:
+              fe = w.find('\nfunction ', fs + 1)
+              if fe < 0: fe = len(w)
+              form = w[fs:fe]
+              form = form.replace('label="العنوان"', 'label="العنوان (IP / hostname فقط)"', 1)
+              form = re.sub(r'(address\\s*:\\s*)address(\\b)', r'\\1validateHostAddress(address)\\2', form, count=1)
+              w = w[:fs] + form + w[fe:]
+          web.write_text(w)
+          PY
+          git diff --check
+
+      - name: Verify build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Commit fixes and remove temporary workflows
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/api/src/main.ts apps/web/src/app.tsx
+          git rm .github/workflows/fix-host-health.yml .github/workflows/fix-host-health-v2.yml
+          git commit -m "fix: validate host address and repair health monitor"
+          git push
