@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   fix:
-    if: contains(github.event.head_commit.message, '[logout-root-fix]') == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,8 +39,6 @@ jobs:
           npm test
           npm run build
       - name: Commit patch and remove workflow
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
