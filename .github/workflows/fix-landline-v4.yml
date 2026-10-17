@@ -1,0 +1,66 @@
+name: Fix landline feature v4
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: contains(github.event.head_commit.message, '[landline-v4]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fix source and schema
+        run: |
+          node <<'NODE'
+          const fs=require('fs');
+          const api='apps/api/src/main.ts';
+          let a=fs.readFileSync(api,'utf8');
+          const dup="LEFT JOIN subscriptions sub ON sub.service_id=s.id LEFT JOIN customer_landlines cl ON cl.id=s.landline_id LEFT JOIN routers r ON r.id=s.router_id LEFT JOIN customer_landlines cl ON cl.id=s.landline_id LEFT JOIN service_allocations a";
+          const one="LEFT JOIN subscriptions sub ON sub.service_id=s.id LEFT JOIN customer_landlines cl ON cl.id=s.landline_id LEFT JOIN routers r ON r.id=s.router_id LEFT JOIN service_allocations a";
+          if(!a.includes(dup)) throw new Error('duplicate customer landline join not found');
+          a=a.replace(dup,one);
+          const detailSelect="SELECT s.id,s.public_code,s.label,c.name category_name,s.status,sub.status subscription_status,sub.starts_at,sub.current_period_end,sub.used_bytes,sub.quota_bytes,r.public_code router_code,r.model router_model,r.connectivity router_connectivity,cfg.public_code config_code,h.city,h.country FROM services s";
+          const detailSelectNew="SELECT s.id,s.public_code,s.label,c.name category_name,s.status,sub.status subscription_status,sub.starts_at,sub.current_period_end,sub.used_bytes,sub.quota_bytes,cl.number landline_number,cl.label landline_label,r.public_code router_code,r.model router_model,r.connectivity router_connectivity,cfg.public_code config_code,h.city,h.country FROM services s";
+          if(!a.includes(detailSelect)) throw new Error('customer service detail select not found');
+          a=a.replace(detailSelect,detailSelectNew);
+          const detailJoin="LEFT JOIN subscriptions sub ON sub.service_id=s.id LEFT JOIN routers r ON r.id=s.router_id LEFT JOIN configs cfg";
+          const detailJoinNew="LEFT JOIN subscriptions sub ON sub.service_id=s.id LEFT JOIN customer_landlines cl ON cl.id=s.landline_id LEFT JOIN routers r ON r.id=s.router_id LEFT JOIN configs cfg";
+          if(!a.includes(detailJoin)) throw new Error('customer service detail join not found');
+          a=a.replace(detailJoin,detailJoinNew);
+          fs.writeFileSync(api,a);
+
+          const base=require('child_process').execFileSync('git',['show','46f0cb0aa7e3c2624e8bd92f1ee0a1dfbcb39764:db/schema.sql'],{encoding:'utf8'});
+          let s=base;
+          s=s.replace("CREATE TABLE IF NOT EXISTS customer_landlines(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),customer_id uuid NOT NULL REFERENCES customers(id) ON DELETE CASCADE,number text NOT NULL,label text,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(customer_id,number));","CREATE TABLE IF NOT EXISTS customer_landlines(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),customer_id uuid NOT NULL REFERENCES customers(id) ON DELETE CASCADE,number text NOT NULL CHECK(number~'^0[0-9]{8,10}$'),label text,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(customer_id,number));");
+          s=s.replace("plan_id uuid REFERENCES config_plans(id),router_id uuid REFERENCES routers(id),label text,status","plan_id uuid REFERENCES config_plans(id),landline_id uuid REFERENCES customer_landlines(id),router_id uuid REFERENCES routers(id),label text,status");
+          s=s.replace("router_product_id uuid REFERENCES router_products(id),plan_id uuid REFERENCES config_plans(id),target_service_id","router_product_id uuid REFERENCES router_products(id),plan_id uuid REFERENCES config_plans(id),landline_id uuid REFERENCES customer_landlines(id),target_service_id");
+          fs.writeFileSync('db/schema.sql',s);
+
+          const mig='db/migrations/20261018_customer_landlines.sql';
+          let m=fs.readFileSync(mig,'utf8').replace("'),' ^20','')","'),'^20','')");
+          fs.writeFileSync(mig,m);
+          console.log('v4 fixes applied');
+          NODE
+      - name: Validate
+        run: |
+          git diff --check
+          npm install --ignore-scripts
+          npm run typecheck
+      - name: Commit final changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/fix-landline-v4.yml .github/workflows/apply-landline-feature.yml .github/workflows/apply-landline-feature-v2.yml .github/workflows/apply-landline-feature-v3.yml
+          git add apps/api/src/main.ts db/schema.sql db/migrations/20261018_customer_landlines.sql .github/workflows/fix-landline-v4.yml .github/workflows/apply-landline-feature.yml .github/workflows/apply-landline-feature-v2.yml .github/workflows/apply-landline-feature-v3.yml
+          git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
+          git commit -m "fix: finalize customer landline schema and service joins"
+          git push origin main
