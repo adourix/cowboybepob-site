@@ -1,0 +1,1 @@
+ALTER TABLE services ALTER COLUMN plan_id DROP NOT NULL;
