@@ -40,7 +40,15 @@ const requiredRoutes = [
 ];
 for (const route of requiredRoutes) contains(api, route, `missing API route fragment: ${route}`);
 
-for (const job of ['fulfill_order','provision_service','renew_service']) contains(worker, `job.type === '${job}'`, `missing worker job: ${job}`);
+const requiredWorkerHandlers = [
+  ['fulfill_order', 'async function fulfillOrder'],
+  ['provision_service', 'async function provisionService'],
+  ['renew_service', 'async function renewService']
+];
+for (const [job, handler] of requiredWorkerHandlers) {
+  contains(worker, handler, `missing worker handler: ${job}`);
+  contains(worker, `'${job}'`, `missing worker job type: ${job}`);
+}
 contains(worker, 'FOR UPDATE SKIP LOCKED', 'worker must use DB-backed SKIP LOCKED claiming');
 contains(worker, 'duration_days', 'provisioning must use plan duration');
 contains(worker, 'proxy_account_id', 'allocation must retain its proxy account');
