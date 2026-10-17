@@ -175,6 +175,11 @@ export class MarzbanProvider {
     return r.status === 204 ? null : r.json();
   }
 
+  async health() {
+    await this.auth();
+    return true;
+  }
+
   async getUser(username: string) {
     try { return await this.request(`/api/user/${encodeURIComponent(username)}`) as MarzbanUser; }
     catch (e: any) { if (e?.status === 404) return null; throw e; }
