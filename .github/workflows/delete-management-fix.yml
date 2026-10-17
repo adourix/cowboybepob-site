@@ -1,0 +1,91 @@
+name: delete-management-fix
+on:
+  push:
+    paths:
+      - '.github/workflows/delete-management-fix.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Patch API and UI
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          api = Path('apps/api/src/main.ts')
+          s = api.read_text()
+
+          marker = "  admin.get('/servers', async (req:Req) => { requirePermission(req,'servers:read'); return (await db(`SELECT h.*,p.name provider_name,count(se.id)::int endpoint_count,coalesce(sum(se.allocated_count),0)::int allocations FROM hosts h JOIN provider_instances p ON p.id=h.provider_instance_id LEFT JOIN server_endpoints se ON se.host_id=h.id GROUP BY h.id,p.name ORDER BY h.created_at DESC`)).rows; });"
+          replacement = marker + "\n  admin.delete('/servers/hosts/:id', async (req:any) => { requirePermission(req,'servers:write'); requireCsrf(req); const c=await pool.connect(); try { await c.query('BEGIN'); const h=await c.query('SELECT id,name FROM hosts WHERE id=$1 FOR UPDATE',[req.params.id]); if(!h.rowCount) throw Object.assign(new Error('الخادم غير موجود'),{statusCode:404}); const deps=await c.query(`SELECT count(*)::int count FROM service_allocations sa JOIN server_endpoints e ON e.id=sa.endpoint_id WHERE e.host_id=$1`,[req.params.id]); if(Number(deps.rows[0].count)>0) throw Object.assign(new Error('لا يمكن حذف الخادم لأنه مرتبط بتخصيصات خدمات. احذف/انقل التخصيصات أولًا.'),{statusCode:409}); await c.query('DELETE FROM category_endpoints WHERE endpoint_id IN (SELECT id FROM server_endpoints WHERE host_id=$1)',[req.params.id]); await c.query('DELETE FROM server_endpoints WHERE host_id=$1',[req.params.id]); await c.query('DELETE FROM hosts WHERE id=$1',[req.params.id]); await audit(c,req,'server.deleted','hosts',req.params.id,{name:h.rows[0].name}); await c.query('COMMIT'); return {ok:true}; } catch(e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); } });"
+          if marker not in s: raise SystemExit('server route marker not found')
+          s = s.replace(marker, replacement, 1)
+
+          provider_marker = "  admin.post('/provider-instances', async (req:any) => { requirePermission(req,'providers:write');requireCsrf(req);const b=req.body||{};if(!b.name||!b.baseUrl||!b.username||!b.password)throw Object.assign(new Error('Provider fields are required'),{statusCode:400});const creds=encryptSecret(JSON.stringify({username:b.username,password:b.password}));return (await db(`INSERT INTO provider_instances(name,type,base_url,credentials_ref,credentials_enc,status) VALUES($1,'MARZBAN',$2,'MARZBAN_ADMIN',$3,'ACTIVE') ON CONFLICT(name) DO UPDATE SET base_url=EXCLUDED.base_url,credentials_enc=EXCLUDED.credentials_enc,status='ACTIVE',updated_at=now() RETURNING id,name,base_url,status`,[b.name,b.baseUrl,creds])).rows[0]; });"
+          provider_replacement = provider_marker + "\n  admin.delete('/provider-instances/:id', async (req:any) => { requirePermission(req,'providers:write'); requireCsrf(req); const c=await pool.connect(); try { await c.query('BEGIN'); const p=await c.query('SELECT id,name FROM provider_instances WHERE id=$1 FOR UPDATE',[req.params.id]); if(!p.rowCount) throw Object.assign(new Error('Provider غير موجود'),{statusCode:404}); const hosts=await c.query('SELECT count(*)::int count FROM hosts WHERE provider_instance_id=$1',[req.params.id]); if(Number(hosts.rows[0].count)>0) throw Object.assign(new Error('لا يمكن حذف الـProvider قبل حذف الخوادم المرتبطة به.'),{statusCode:409}); const accounts=await c.query('SELECT count(*)::int count FROM proxy_accounts WHERE provider_instance_id=$1',[req.params.id]); if(Number(accounts.rows[0].count)>0) throw Object.assign(new Error('لا يمكن حذف الـProvider لأنه مرتبط بحسابات Marzban لخدمات موجودة.'),{statusCode:409}); await c.query('DELETE FROM provider_instances WHERE id=$1',[req.params.id]); await audit(c,req,'provider.deleted','provider_instances',req.params.id,{name:p.rows[0].name}); await c.query('COMMIT'); return {ok:true}; } catch(e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); } });"
+          if provider_marker not in s: raise SystemExit('provider route marker not found')
+          s = s.replace(provider_marker, provider_replacement, 1)
+
+          config_marker = "  admin.get('/subscriptions', async (req:Req) => { requirePermission(req,'services:read'); return (await db(`SELECT sub.id, s.public_code, cu.full_name customer_name, c.name category, sub.status subscription_status, sub.starts_at, sub.current_period_end, sub.used_bytes, sub.quota_bytes FROM subscriptions sub JOIN services s ON s.id=sub.service_id JOIN customers cu ON cu.id=s.customer_id JOIN config_categories c ON c.id=s.category_id ORDER BY sub.current_period_end DESC NULLS LAST LIMIT 300`)).rows; });"
+          config_replacement = "  admin.get('/configs', async (req:Req) => { requirePermission(req,'services:read'); return (await db(`SELECT cfg.id,cfg.public_code,cfg.service_id,s.public_code service_code,s.status service_status,cfg.version,cfg.status,cfg.protocol,cfg.created_at FROM configs cfg JOIN services s ON s.id=cfg.service_id ORDER BY cfg.created_at DESC LIMIT 500`)).rows; });\n  admin.delete('/configs/:id', async (req:any) => { requirePermission(req,'services:write'); requireCsrf(req); const c=await pool.connect(); try { await c.query('BEGIN'); const cfg=await c.query(`SELECT cfg.id,cfg.public_code,cfg.status config_status,s.status service_status FROM configs cfg JOIN services s ON s.id=cfg.service_id WHERE cfg.id=$1 FOR UPDATE`,[req.params.id]); if(!cfg.rowCount) throw Object.assign(new Error('الكونفيج غير موجود'),{statusCode:404}); if(cfg.rows[0].config_status==='CURRENT' && ['PROVISIONING','ACTIVE','SUSPENDED'].includes(cfg.rows[0].service_status)) throw Object.assign(new Error('لا يمكن حذف الكونفيج الحالي لخدمة نشطة. أنهِ الخدمة أولًا.'),{statusCode:409}); await c.query('DELETE FROM configs WHERE id=$1',[req.params.id]); await audit(c,req,'config.deleted','configs',req.params.id,{publicCode:cfg.rows[0].public_code}); await c.query('COMMIT'); return {ok:true}; } catch(e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); } });\n" + config_marker
+          if config_marker not in s: raise SystemExit('config route marker not found')
+          s = s.replace(config_marker, config_replacement, 1)
+          api.write_text(s)
+
+          web = Path('apps/web/src/main.tsx')
+          w = web.read_text()
+          w = w.replace("ShieldCheck,ShoppingCart,Users,Wifi,Workflow", "ShieldCheck,ShoppingCart,Users,Wifi,Workflow,Trash2")
+          w = w.replace("['/admin/servers','الخوادم',HardDrive],['/admin/catalog'", "['/admin/servers','الخوادم',HardDrive],['/admin/providers','المزوّدون',Settings],['/admin/configs','الكونفيجات',Box],['/admin/catalog'")
+          w = w.replace("type ResourceKind='customers'|'services'|'routers'|'servers'|'orders'|'payments'|'jobs'|'audit';", "type ResourceKind='customers'|'services'|'routers'|'servers'|'configs'|'orders'|'payments'|'jobs'|'audit';")
+          w = w.replace("  servers:{title:'الخوادم',endpoint:'/api/v1/admin/servers',cols:['الخادم','العنوان','المزوّد','الحالة','الصحة','النقاط'],keys:['name','address','provider_name','status','health_status','endpoint_count']},", "  servers:{title:'الخوادم',endpoint:'/api/v1/admin/servers',cols:['الخادم','العنوان','المزوّد','الحالة','الصحة','النقاط',''],keys:['name','address','provider_name','status','health_status','endpoint_count']},\n  configs:{title:'الكونفيجات',endpoint:'/api/v1/admin/configs',cols:['الكونفيج','الخدمة','الحالة','البروتوكول','النسخة','التاريخ',''],keys:['public_code','service_code','status','protocol','version','created_at']},")
+          old = "function ResourcePage({kind,user:_user}:{kind:ResourceKind;user:User}){const m=meta[kind];const [rows,setRows]=useState<any[]>([]);const [q,setQ]=useState('');const [open,setOpen]=useState(false);const [error,setError]=useState('');const [loading,setLoading]=useState(false);const load=()=>{setLoading(true);api(m.endpoint+(q?`?q=${encodeURIComponent(q)}`:'')).then(x=>setRows(Array.isArray(x)?x:[])).catch(e=>setError(e.message)).finally(()=>setLoading(false))};useEffect(()=>{void load();},[]);const canAdd=['customers','routers','servers'].includes(kind);return <div className=\"page\"><Heading title={m.title} sub=\"بيانات حقيقية من الـAPI.\" onAdd={canAdd?()=>setOpen(true):undefined}/><section className=\"panel table-panel\"><div className=\"toolbar\"><label className=\"search wide\"><Search size={16}/><input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>e.key==='Enter'&&load()} placeholder=\"بحث...\"/></label><button className=\"secondary-button\" onClick={load}><RefreshCw size={15}/> تحديث</button></div>{error&&<div className=\"alert error\">{error}</div>}<div className=\"table-wrap\"><table><thead><tr>{m.cols.map((x:string)=><th key={x}>{x}</th>)}</tr></thead><tbody>{loading?<tr><td className=\"empty\" colSpan={m.cols.length}>جاري التحميل...</td></tr>:rows.length===0?<tr><td className=\"empty\" colSpan={m.cols.length}>لا توجد بيانات</td></tr>:rows.map((r:any,i:number)=><tr key={r.id||i}>{m.keys.map((k:string)=><td key={k}>{k.includes('minor')?money(r[k]):k.endsWith('_at')||k.includes('date')?date(r[k]):['status','connectivity','state','lifecycle_status'].includes(k)?<span className=\"badge\">{label(r[k])}</span>:String(r[k]??'—')}</td>)}</tr>)}</tbody></table></div></section>{open&&kind==='customers'&&<CustomerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}{open&&kind==='routers'&&<RouterForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}{open&&kind==='servers'&&<ServerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}</div>}"
+          new = "function ResourcePage({kind,user:_user}:{kind:ResourceKind;user:User}){const m=meta[kind];const [rows,setRows]=useState<any[]>([]);const [q,setQ]=useState('');const [open,setOpen]=useState(false);const [error,setError]=useState('');const [loading,setLoading]=useState(false);const load=()=>{setLoading(true);api(m.endpoint+(q?`?q=${encodeURIComponent(q)}`:'')).then(x=>setRows(Array.isArray(x)?x:[])).catch(e=>setError(e.message)).finally(()=>setLoading(false))};useEffect(()=>{void load();},[]);const canAdd=['customers','routers','servers'].includes(kind);const canDelete=kind==='servers'||kind==='configs';const remove=async(id:string)=>{if(!confirm(kind==='servers'?'حذف الخادم؟ سيتم حذف الـendpoints المرتبطة به إذا لم تكن مرتبطة بتخصيصات.': 'حذف الكونفيج؟'))return;try{await api(`${m.endpoint}/${id}`,{method:'DELETE'});load()}catch(e:any){setError(e.message)}};return <div className=\"page\"><Heading title={m.title} sub=\"بيانات حقيقية من الـAPI.\" onAdd={canAdd?()=>setOpen(true):undefined}/><section className=\"panel table-panel\"><div className=\"toolbar\"><label className=\"search wide\"><Search size={16}/><input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>e.key==='Enter'&&load()} placeholder=\"بحث...\"/></label><button className=\"secondary-button\" onClick={load}><RefreshCw size={15}/> تحديث</button></div>{error&&<div className=\"alert error\">{error}</div>}<div className=\"table-wrap\"><table><thead><tr>{m.cols.map((x:string)=><th key={x}>{x}</th>)}</tr></thead><tbody>{loading?<tr><td className=\"empty\" colSpan={m.cols.length}>جاري التحميل...</td></tr>:rows.length===0?<tr><td className=\"empty\" colSpan={m.cols.length}>لا توجد بيانات</td></tr>:rows.map((r:any,i:number)=><tr key={r.id||i}>{m.keys.map((k:string)=><td key={k}>{k.includes('minor')?money(r[k]):k.endsWith('_at')||k.includes('date')?date(r[k]):['status','connectivity','state','lifecycle_status'].includes(k)?<span className=\"badge\">{label(r[k])}</span>:String(r[k]??'—')}</td>)}{canDelete&&<td><button className=\"danger-button\" onClick={()=>remove(r.id)} title=\"حذف\"><Trash2 size={15}/> حذف</button></td>}</tr>)}</tbody></table></div></section>{open&&kind==='customers'&&<CustomerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}{open&&kind==='routers'&&<RouterForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}{open&&kind==='servers'&&<ServerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);load()}}/>}</div>}"
+          if old not in w: raise SystemExit('ResourcePage marker not found')
+          w = w.replace(old, new, 1)
+
+          insert_before = "function SettingsPage(){"
+          provider_page = "function ProvidersPage(){const [rows,setRows]=useState<any[]>([]);const [error,setError]=useState('');const load=()=>api('/api/v1/admin/provider-instances').then(setRows).catch(e=>setError(e.message));useEffect(()=>{void load();},[]);const remove=async(id:string)=>{if(!confirm('حذف الـProvider؟'))return;try{await api(`/api/v1/admin/provider-instances/${id}`,{method:'DELETE'});load()}catch(e:any){setError(e.message)}};return <div className=\"page\"><Heading title=\"المزوّدون\" sub=\"Providers الخاصة بـMarzban وبيانات الاتصال المشفرة.\"/><section className=\"panel table-panel\">{error&&<div className=\"alert error\">{error}</div>}<div className=\"table-wrap\"><table><thead><tr><th>الاسم</th><th>النوع</th><th>Base URL</th><th>الحالة</th><th>Credentials</th><th></th></tr></thead><tbody>{rows.map(r=><tr key={r.id}><td>{r.name}</td><td>{r.type}</td><td>{r.base_url}</td><td><span className=\"badge\">{label(r.status)}</span></td><td>{r.has_credentials?'موجودة':'غير موجودة'}</td><td><button className=\"danger-button\" onClick={()=>remove(r.id)}><Trash2 size={15}/> حذف</button></td></tr>)}</tbody></table></div></section></div>}\n\n"
+          if insert_before not in w: raise SystemExit('settings marker not found')
+          w = w.replace(insert_before, provider_page + insert_before, 1)
+
+          route_marker = "<Route path=\"/admin/servers\" element={<ResourcePage kind=\"servers\" user={user}/>}/><Route path=\"/admin/catalog\""
+          route_replacement = "<Route path=\"/admin/servers\" element={<ResourcePage kind=\"servers\" user={user}/>}/><Route path=\"/admin/providers\" element={<ProvidersPage/>}/><Route path=\"/admin/configs\" element={<ResourcePage kind=\"configs\" user={user}/>}/><Route path=\"/admin/catalog\""
+          if route_marker not in w: raise SystemExit('route marker not found')
+          w = w.replace(route_marker, route_replacement, 1)
+          web.write_text(w)
+          PY
+
+      - name: Add styles for delete actions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('apps/web/src/styles.css')
+          s=p.read_text()
+          if '.danger-button' not in s:
+            s += '\n.danger-button{display:inline-flex;align-items:center;gap:6px;border:1px solid #fecaca;background:#fff1f2;color:#b91c1c;border-radius:8px;padding:7px 10px;cursor:pointer;font:inherit}\n.danger-button:hover{background:#ffe4e6}\n'
+          p.write_text(s)
+          PY
+
+      - name: Verify build
+        run: |
+          npm install
+          npm run build
+
+      - name: Commit source changes and remove patch workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/delete-management-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add apps/api/src/main.ts apps/web/src/main.tsx apps/web/src/styles.css .github/workflows/delete-management-fix.yml
+          git commit -m 'feat: add deletion controls for servers providers and configs'
+          git push
