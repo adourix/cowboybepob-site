@@ -279,7 +279,7 @@ app.register(async admin => {
       if(p.status==='FAILED') { await c.query('COMMIT'); return p; }
       if(!['INITIATED','PENDING'].includes(String(p.status))) throw Object.assign(new Error('لا يمكن رفض هذه الدفعة في حالتها الحالية'),{statusCode:409});
       const reason=String(req.body?.reason||'رفض الدفع اليدوي').trim().slice(0,500);
-      const pay=await c.query(`UPDATE payments SET status='FAILED',raw=COALESCE(raw,'{}'::jsonb)||jsonb_build_object('rejectionReason',$1),updated_at=now() WHERE id=$2 RETURNING *`,[reason,p.id]);
+      const pay=await c.query(`UPDATE payments SET status='FAILED',raw=COALESCE(raw,'{}'::jsonb)||jsonb_build_object('rejectionReason',$1::text),updated_at=now() WHERE id=$2 RETURNING *`,[reason,p.id]);
       await audit(c,req,'payment.rejected','payments',p.id,{reason,orderCode:p.order_code},p.customer_id);
       await c.query('COMMIT');
       return pay.rows[0];
