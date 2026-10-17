@@ -133,6 +133,16 @@ app.register(cors, { origin: WEB_ORIGIN, credentials: true });
 app.register(cookie);
 app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
 app.addHook('preHandler', authenticate);
+app.addHook('preHandler', async (req: Req) => {
+  if (req.method !== 'POST' || !req.url.includes('/api/v1/admin/servers')) return;
+  const body = (req.body || {}) as any;
+  if (typeof body.address !== 'string') return;
+  const address = body.address.trim();
+  if (!address || address.includes('://') || (address.includes(':') && !/^\[[0-9a-fA-F:]+\]$/.test(address))) {
+    throw Object.assign(new Error('عنوان الخادم يجب أن يكون IP أو hostname فقط. بورت Marzban موجود داخل الـProvider.'), { statusCode: 400 });
+  }
+  body.address = address;
+});
 app.setErrorHandler((error: any, _req, reply) => reply.code(errorStatus(error)).send({ error: error.message || 'Internal error' }));
 
 app.get('/health', async () => ({ ok: true, service: 'cowboybepob-api', time: new Date().toISOString() }));
