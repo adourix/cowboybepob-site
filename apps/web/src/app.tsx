@@ -28,7 +28,7 @@ type ResourceKind='customers'|'services'|'subscriptions'|'routers'|'servers'|'or
 type ResourceMeta={title:string;endpoint:string;cols:string[];keys:string[]};
 const meta:Record<ResourceKind,ResourceMeta>={
  customers:{title:'العملاء',endpoint:'/api/v1/admin/customers',cols:['الكود','الاسم','البريد','الهاتف','الحالة','المدينة'],keys:['public_code','full_name','email','mobile_phone','status','city']},
- services:{title:'الخدمات',endpoint:'/api/v1/admin/services',cols:['الكود','العميل','الفئة','البروتوكول','الحالة','الكونفيج'],keys:['public_code','customer_name','category','protocol','status','config_code']},
+ services:{title:'الخدمات',endpoint:'/api/v1/admin/services',cols:['الكود','العميل','الفئة','البروتوكول','الحالة','الرقم الأرضي','الكونفيج'],keys:['public_code','customer_name','category','protocol','status','landline_number','config_code']},
  subscriptions:{title:'الاشتراكات',endpoint:'/api/v1/admin/subscriptions',cols:['الاشتراك','الخدمة','العميل','الفئة','الكونفيج','الراوتر','الحالة','الانتهاء'],keys:['public_code','service_code','customer_name','category','config_code','router_code','subscription_status','current_period_end']},
  routers:{title:'الراوترات',endpoint:'/api/v1/admin/routers',cols:['الكود','الموديل','العميل','الكونفيج','الخدمة','الدورة','الاتصال','آخر ظهور'],keys:['public_code','model','customer_name','config_code','service_code','lifecycle_status','connectivity','last_seen_at']},
  servers:{title:'الخوادم',endpoint:'/api/v1/admin/servers',cols:['الخادم','العنوان','المزوّد','الحالة','الصحة','النقاط'],keys:['name','address','provider_name','status','health_status','endpoint_count']},
