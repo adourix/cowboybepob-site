@@ -1,0 +1,68 @@
+name: Stage router config assignment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/apply-router-config-assignment.mjs'
+      - '.github/workflows/apply-router-config-assignment.yml'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+      - name: Apply source patch
+        run: node scripts/apply-router-config-assignment.mjs
+      - name: Apply finishing patches
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const api='apps/api/src/main.ts';
+          const web='apps/web/src/main.tsx';
+          let a=fs.readFileSync(api,'utf8');
+          const from="cfg.public_code config_code,h.city,h.country,se.public_code endpoint_code";
+          const to="cfg.id config_id,cfg.public_code config_code,h.city,h.country,se.public_code endpoint_code";
+          if(!a.includes(from)) throw new Error('admin services config_id target missing');
+          a=a.replace(from,to);
+          fs.writeFileSync(api,a);
+          let w=fs.readFileSync(web,'utf8');
+          const serviceLine="<small>ينتهي: {date(s.current_period_end)}</small>";
+          const serviceLineNew="<small>الراوتر: {s.router_code||'غير مربوط'}</small><small>الكونفيج: {s.config_code||'—'}</small><small>ينتهي: {date(s.current_period_end)}</small>";
+          if(!w.includes(serviceLine)) throw new Error('customer service card target missing');
+          w=w.replace(serviceLine,serviceLineNew);
+          fs.writeFileSync(web,w);
+          NODE
+      - name: Build and test
+        run: |
+          npm install
+          npm run build
+          npm test
+      - name: Remove one-time patch machinery
+        run: rm -f scripts/apply-router-config-assignment.mjs .github/workflows/apply-router-config-assignment.yml
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ github.token }}
+          branch: feature/router-config-assignment
+          delete-branch: true
+          title: 'feat: link routers to customer configs'
+          commit-message: 'feat: link routers to customer configs'
+          body: |
+            Implements router registration with explicit customer + existing config selection.
+
+            - validates customer/config ownership and service state
+            - links the existing service to the new router
+            - exposes config/service codes in admin and customer data
+            - shows the selected config in router registration and customer service cards
+            - builds and runs architecture tests before creating this PR
