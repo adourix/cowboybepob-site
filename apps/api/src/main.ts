@@ -7,7 +7,25 @@ import { authenticator } from 'otplib';
 import { Pool, PoolClient, QueryResultRow } from 'pg';
 import crypto from 'node:crypto';
 import { sendPasswordResetEmail, sendVerificationEmail } from './email.js';
-import { MarzbanProvider } from './marzban.js';\n\nasync function refreshInfrastructureHealth() {\n  const r = await db(`SELECT h.id,h.provider_instance_id,p.base_url,p.status provider_status FROM hosts h JOIN provider_instances p ON p.id=h.provider_instance_id WHERE h.status <> 'DECOMMISSIONED'`);\n  for (const host of r.rows) {\n    const checkedAt = new Date();\n    let health: 'HEALTHY'|'DEGRADED'|'DOWN' = 'HEALTHY';\n    try {\n      if (host.provider_status !== 'ACTIVE') throw new Error('provider disabled');\n      await new MarzbanProvider(host.base_url).health();\n      await db('UPDATE provider_instances SET last_ok_at=now(),updated_at=now() WHERE id=$1',[host.provider_instance_id]);\n    } catch {\n      health = 'DOWN';\n    }\n    await db('UPDATE hosts SET health_status=$1,last_health_check_at=$2,updated_at=now() WHERE id=$3',[health,checkedAt,host.id]);\n    await db('UPDATE server_endpoints SET health_status=$1,last_health_check_at=$2,updated_at=now() WHERE host_id=$3',[health,checkedAt,host.id]);\n  }\n}\n
+import { MarzbanProvider } from './marzban.js';
+
+async function refreshInfrastructureHealth() {
+  const r = await db(`SELECT h.id,h.provider_instance_id,p.base_url,p.status provider_status FROM hosts h JOIN provider_instances p ON p.id=h.provider_instance_id WHERE h.status <> 'DECOMMISSIONED'`);
+  for (const host of r.rows) {
+    const checkedAt = new Date();
+    let health: 'HEALTHY'|'DEGRADED'|'DOWN' = 'HEALTHY';
+    try {
+      if (host.provider_status !== 'ACTIVE') throw new Error('provider disabled');
+      await new MarzbanProvider(host.base_url).health();
+      await db('UPDATE provider_instances SET last_ok_at=now(),updated_at=now() WHERE id=$1',[host.provider_instance_id]);
+    } catch {
+      health = 'DOWN';
+    }
+    await db('UPDATE hosts SET health_status=$1,last_health_check_at=$2,updated_at=now() WHERE id=$3',[health,checkedAt,host.id]);
+    await db('UPDATE server_endpoints SET health_status=$1,last_health_check_at=$2,updated_at=now() WHERE host_id=$3',[health,checkedAt,host.id]);
+  }
+}
+
 
 const app = Fastify({ logger: process.env.NODE_ENV !== 'test' });
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
