@@ -137,7 +137,7 @@ app.post('/api/v1/auth/login', { config: { rateLimit: { max: 8, timeWindow: '1 m
   return { user: principal, csrf };
 });
 
-app.post('/api/v1/auth/logout', async (req: Req, reply) => { if (req.sessionId) await db('UPDATE auth_sessions SET revoked_at=now() WHERE id=$1', [req.sessionId]); reply.clearCookie('cb_session', { path: '/' }); reply.clearCookie('cb_csrf', { path: '/' }); return { ok: true }; });
+app.post('/api/v1/auth/logout', async (req: Req, reply) => { const token=req.cookies?.cb_session; if (token) await db('UPDATE auth_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL',[sha(token)]); else if (req.sessionId) await db('UPDATE auth_sessions SET revoked_at=now() WHERE id=$1',[req.sessionId]); reply.header('Cache-Control','no-store'); reply.clearCookie('cb_session',{path:'/',httpOnly:true,secure:COOKIE_SECURE,sameSite:'lax'}); reply.clearCookie('cb_csrf',{path:'/',httpOnly:false,secure:COOKIE_SECURE,sameSite:'lax'}); return {ok:true}; });
 
 app.post('/api/v1/customer/auth/register', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req: any) => {
   const { fullName, email, password, mobilePhone, addressLine = '', city = '', governorate = '' } = req.body || {};
