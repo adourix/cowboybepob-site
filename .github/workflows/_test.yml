@@ -14,6 +14,18 @@ jobs:
       - name: Repair
         run: |
           if [ ! -f PLATFORM_FIX_TRIGGER.md ]; then exit 0; fi
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/platform_consistency_repair.py')
+          s=p.read_text()
+          marker="old = \"\"\"  customer.post('/services/:id/renew'"
+          if marker in s:
+              start=s.index(marker)
+              end_marker="p.write_text(s.replace(old, new, 1))"
+              end=s.index(end_marker,start)+len(end_marker)
+              s=s[:start]+"p.write_text(s)"+s[end:]
+              p.write_text(s)
+          PY
           python3 scripts/platform_consistency_repair.py
           rm -f .github/workflows/platform-consistency-fix.yml .github/workflows/platform-consistency-fix-v2.yml .github/workflows/_test.yml PLATFORM_FIX_TRIGGER.md WORKFLOW_TEST_TRIGGER.md scripts/platform_consistency_repair.py
           git config user.name "github-actions[bot]"
