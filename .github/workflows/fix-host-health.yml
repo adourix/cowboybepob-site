@@ -1,0 +1,103 @@
+name: Fix host address and health monitoring
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Repair source
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          main = Path('apps/api/src/main.ts')
+          text = main.read_text()
+
+          # The previous health patch was committed with literal backslash-n
+          # sequences between the import and const app. Convert only that
+          # inserted block back to real source newlines.
+          marker = "import { MarzbanProvider } from './marzban.js';"
+          start = text.find(marker)
+          end = text.find('\nconst app =', start)
+          if start >= 0 and end > start:
+              block = text[start:end]
+              block = block.replace('\\n', '\n')
+              text = text[:start] + block + text[end:]
+
+          # Make the health monitor explicit and stable if it is missing.
+          if 'async function refreshInfrastructureHealth()' not in text:
+              insert = """\n\nasync function refreshInfrastructureHealth() {\n  const r = await db(`SELECT h.id,h.provider_instance_id,p.base_url,p.status provider_status FROM hosts h JOIN provider_instances p ON p.id=h.provider_instance_id WHERE h.status <> 'DECOMMISSIONED'`);\n  for (const host of r.rows) {\n    const checkedAt = new Date();\n    let health: 'HEALTHY'|'DEGRADED'|'DOWN' = 'HEALTHY';\n    try {\n      if (host.provider_status !== 'ACTIVE') throw new Error('provider disabled');\n      await new MarzbanProvider(host.base_url).health();\n      await db('UPDATE provider_instances SET last_ok_at=now(),updated_at=now() WHERE id=$1',[host.provider_instance_id]);\n    } catch {\n      health = 'DOWN';\n    }\n    await db('UPDATE hosts SET health_status=$1,last_health_check_at=$2,updated_at=now() WHERE id=$3',[health,checkedAt,host.id]);\n    await db('UPDATE server_endpoints SET health_status=$1,last_health_check_at=$2 WHERE host_id=$3',[health,checkedAt,host.id]);\n  }\n}\n"""
+              text = text.replace("import { MarzbanProvider } from './marzban.js';", "import { MarzbanProvider } from './marzban.js';" + insert, 1)
+
+          # Ensure the periodic monitor is started after seed().
+          if 'void refreshInfrastructureHealth().catch' not in text:
+              needle = '  await seed();'
+              replacement = needle + "\n  void refreshInfrastructureHealth().catch((error) => app.log.error({ error }, 'initial infrastructure health check failed'));\n  setInterval(() => void refreshInfrastructureHealth().catch((error) => app.log.error({ error }, 'infrastructure health check failed')), 30000);"
+              if needle in text:
+                  text = text.replace(needle, replacement, 1)
+
+          main.write_text(text)
+
+          # Frontend: make the host-address field unambiguously IP/hostname-only
+          # and reject a port in the UI before the request is sent. We patch the
+          # existing ServerForm without replacing its API wiring.
+          web = Path('apps/web/src/app.tsx')
+          w = web.read_text()
+          if 'function validateHostAddress' not in w:
+              helper = """\nfunction validateHostAddress(value:string){\n  const address=value.trim();\n  if(!address) throw new Error('عنوان الخادم مطلوب');\n  if(address.includes('://')) throw new Error('اكتب IP أو hostname فقط بدون http:// أو https://');\n  if(address.includes(':') && !/^\\[[0-9a-fA-F:]+\\]$/.test(address)) throw new Error('اكتب IP أو hostname فقط. بورت Marzban موجود داخل الـProvider.');\n  return address;\n}\n"""
+              w = w.replace("function Field({label:txt", helper + "\nfunction Field({label:txt", 1)
+
+          # Add a clear hint to the existing Arabic address field wherever it occurs.
+          w = w.replace('label="العنوان" value={address}', 'label="العنوان (IP / hostname فقط)" value={address}', 1)
+
+          # Validate the address immediately before an existing servers POST.
+          patterns = [
+              r"(const payload=\\{[^\\n}]*address[^\\n}]*\\})",
+              r"(body:JSON\\.stringify\\(\\{[^\\n}]*address[^\\n}]*\\}\\))",
+          ]
+          # Prefer inserting validation after the address state declaration.
+          if 'const validAddress=validateHostAddress(address)' not in w and 'const validAddress = validateHostAddress(address)' not in w:
+              m = re.search(r"(const\\[address,setAddress\\]=useState\\(''\\);)", w)
+              if m:
+                  # Keep state declaration intact; validation is injected at submit time
+                  # by wrapping the address value in the existing POST payload.
+                  w = w.replace('address}', 'validAddress}', 1) if False else w
+              # Patch the first servers form submission by replacing only the address
+              # property value in a request body, if present.
+              w = re.sub(r"(address\\s*:\\s*)address(\\b)", r"\\1validateHostAddress(address)\\2", w, count=1)
+
+          web.write_text(w)
+          PY
+
+          git diff --check
+
+      - name: Verify build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Commit fixes and remove this workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/api/src/main.ts apps/web/src/app.tsx
+          git rm .github/workflows/fix-host-health.yml
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "fix: validate host address and repair health monitor"
+          git push
