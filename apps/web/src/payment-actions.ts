@@ -5,10 +5,12 @@ function csrfToken(){
 }
 
 async function request(path:string,method:'POST',body?:unknown){
-  const headers=new Headers({'content-type':'application/json'});
+  const headers=new Headers();
+  if(body!==undefined) headers.set('content-type','application/json');
   const csrf=csrfToken();
   if(csrf) headers.set('x-csrf-token',decodeURIComponent(csrf));
-  let r=await fetch(path,{method,headers,credentials:'include',cache:'no-store',body:body===undefined?undefined:JSON.stringify(body)});
+  const payload=body===undefined?undefined:JSON.stringify(body);
+  let r=await fetch(path,{method,headers,credentials:'include',cache:'no-store',body:payload});
   let data=await r.json().catch(()=>({}));
   if(!r.ok&&r.status===403&&data.error==='CSRF validation failed'){
     const sync=await fetch('/api/v1/auth/me',{credentials:'include',cache:'no-store'});
@@ -16,7 +18,7 @@ async function request(path:string,method:'POST',body?:unknown){
     if(sync.ok&&sd.csrf){
       document.cookie=`cb_csrf=${encodeURIComponent(sd.csrf)}; Path=/; SameSite=Lax`;
       headers.set('x-csrf-token',sd.csrf);
-      r=await fetch(path,{method,headers,credentials:'include',cache:'no-store',body:body===undefined?undefined:JSON.stringify(body)});
+      r=await fetch(path,{method,headers,credentials:'include',cache:'no-store',body:payload});
       data=await r.json().catch(()=>({}));
     }
   }
