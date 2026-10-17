@@ -1,0 +1,45 @@
+name: Fix landline feature v7
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: contains(github.event.head_commit.message, '[landline-v7]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Remove duplicate service landline join
+        run: |
+          node <<'NODE'
+          const fs=require('fs');
+          let a=fs.readFileSync('apps/api/src/main.ts','utf8');
+          const dup="LEFT JOIN configs cfg ON cfg.service_id=s.id AND cfg.status='CURRENT' LEFT JOIN customer_landlines cl ON cl.id=s.landline_id LEFT JOIN service_allocations a";
+          const one="LEFT JOIN configs cfg ON cfg.service_id=s.id AND cfg.status='CURRENT' LEFT JOIN service_allocations a";
+          if(!a.includes(dup)) throw new Error('duplicate service landline join not found');
+          a=a.replace(dup,one);
+          fs.writeFileSync('apps/api/src/main.ts',a);
+          NODE
+      - name: Validate
+        run: |
+          git diff --check
+          npm install --ignore-scripts
+          npm run typecheck
+      - name: Commit final state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/fix-landline-v7.yml
+          git add -A
+          git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
+          git commit -m "fix: remove duplicate landline service join"
+          git push origin main
