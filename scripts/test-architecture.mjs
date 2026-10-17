@@ -4,7 +4,10 @@ import { strict as assert } from 'node:assert';
 const read = (p) => readFile(p, 'utf8');
 const schema = await read('db/schema.sql');
 const api = await read('apps/api/src/main.ts');
-const worker = await read('apps/api/src/worker.ts');
+const worker = await read('apps/api/src/worker-v2.ts');
+const workerPackage = JSON.parse(await read('apps/api/package.json'));
+const endpointSync = await read('apps/api/src/endpointSync.ts');
+const marzban = await read('apps/api/src/marzban.ts');
 const web = await read('apps/web/src/main.tsx');
 const css = await read('apps/web/src/styles.css');
 
@@ -20,9 +23,8 @@ const requiredTables = [
   'payments','payment_events','refunds','jobs','audit_logs','app_settings'
 ];
 for (const table of requiredTables) contains(schema, `CREATE TABLE IF NOT EXISTS ${table}(`, `missing table: ${table}`);
+contains(schema, 'credentials_enc bytea', 'provider credential encryption column missing from canonical schema');
 
-// The API groups admin/customer endpoints under Fastify prefixes. Validate the
-// prefixes separately, then validate the route fragments inside each group.
 const requiredPrefixes = [
   "prefix:'/api/v1/admin'",
   "prefix:'/api/v1/customer'"
@@ -38,9 +40,20 @@ const requiredRoutes = [
 ];
 for (const route of requiredRoutes) contains(api, route, `missing API route fragment: ${route}`);
 
-for (const job of ['fulfill_order','provision_service','renew_service']) contains(worker, `job.type==='${job}'`, `missing worker job: ${job}`);
+for (const job of ['fulfill_order','provision_service','renew_service']) contains(worker, `job.type === '${job}'`, `missing worker job: ${job}`);
 contains(worker, 'FOR UPDATE SKIP LOCKED', 'worker must use DB-backed SKIP LOCKED claiming');
 contains(worker, 'duration_days', 'provisioning must use plan duration');
+contains(worker, 'proxy_account_id', 'allocation must retain its proxy account');
+contains(worker, 'manual_link_enc', 'provider-generated client link must be persisted');
+contains(worker, 'PROVIDER_4XX', 'permanent provider failure must surface on the order item');
+contains(worker, 'recoverStaleJobs', 'worker must recover abandoned locks');
+contains(worker, 'syncAllEndpoints', 'worker must refresh endpoint inventory');
+contains(endpointSync, 'flattenInboundResponse', 'endpoint sync must normalize grouped Marzban inbounds');
+contains(endpointSync, 'markUnseenEndpoints', 'endpoint sync must retire removed inbounds');
+contains(marzban, 'providerId', 'Marzban adapter must support provider-specific credentials');
+contains(marzban, 'AbortSignal.timeout', 'Marzban calls must have a bounded timeout');
+contains(marzban, 'protocol: String((item as any).protocol || protocol)', 'grouped inbound protocols must be preserved');
+assert.equal(workerPackage.scripts.worker, 'node dist/worker-v2.js', 'production worker must use the hardened implementation');
 contains(api, 'secrets:reveal', 'secret reveal must have a dedicated permission');
 contains(api, 'secret.revealed', 'secret reveal must be audited');
 contains(api, 'Idempotency-Key required', 'checkout must require an idempotency key');
@@ -51,4 +64,4 @@ contains(web, '/admin/servers', 'admin servers page missing');
 contains(css, 'margin-left:264px', 'desktop sidebar layout regression detected');
 assert.doesNotMatch(web, /docker-compose|Docker Desktop/, 'web UI must not depend on Docker');
 
-console.log(`Architecture smoke tests passed: ${requiredTables.length} tables + API/worker/UI invariants.`);
+console.log(`Architecture smoke tests passed: ${requiredTables.length} tables + API/worker/UI/provider invariants.`);
