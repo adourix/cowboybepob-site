@@ -1,0 +1,123 @@
+name: apply-root-routing-and-server-status
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message != 'fix: route root separately and show server connection status'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch application
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          app = Path('apps/web/src/app.tsx')
+          css = Path('apps/web/src/styles.css')
+          s = app.read_text()
+
+          root_component = '''function RootEntry(){
+            const[checking,setChecking]=useState(true);
+            const[user,setUser]=useState<User|null>(null);
+            const[serverError,setServerError]=useState(false);
+            useEffect(()=>{
+              void api('/api/v1/auth/me')
+                .then(x=>{setUser(x.user||null);setServerError(false)})
+                .catch(()=>{setUser(null);setServerError(true)})
+                .finally(()=>setChecking(false))
+            },[]);
+            if(checking)return <div className="auth-page"><div className="auth-card"><h1>CowboyBepob</h1><p>جارٍ التحقق من الاتصال والجلسة...</p></div></div>;
+            if(!user)return <div className="auth-page"><div className="auth-card"><div className="brand-inline"><div className="brand-mark"><Globe2 size={20}/></div><b>CowboyBepob</b></div><h1>تسجيل الدخول</h1><p>الدخول إلى لوحة الإدارة أو بوابة العميل.</p>{serverError&&<div className="alert error">تعذر الاتصال بالسيرفر حاليًا. تأكد من تشغيل API وNginx ثم أعد المحاولة.</div>}<Auth onLogin={u=>{window.location.assign(u.type==='STAFF'?'/admin':'/customer')}}/></div></div>;
+            return <div className="auth-page"><div className="auth-card"><div className="brand-inline"><div className="brand-mark"><Globe2 size={20}/></div><b>CowboyBepob</b></div><h1>مرحبًا بعودتك</h1><p>أنت مسجل الدخول بالفعل.</p><div className="alert success">الحساب: {user.email}</div><a className="primary-button full" href={user.type==='STAFF'?'/admin':'/customer'}>{user.type==='STAFF'?'فتح لوحة الإدارة':'فتح بوابة العميل'}</a></div></div>
+          }
+          '''
+
+          # If a previous attempt inserted RootEntry, normalize it by removing that block.
+          s = re.sub(r'function RootEntry\(\)\{.*?\n\}\n\nfunction Shell\(', 'function Shell(', s, count=1, flags=re.S)
+          if 'function RootEntry(' not in s:
+              marker = 'function Shell('
+              if marker not in s:
+                  raise SystemExit('Shell marker not found')
+              s = s.replace(marker, root_component + '\n' + marker, 1)
+
+          # Replace the root route without touching admin/customer routes.
+          root_route = '<Route path="/" element={<RootEntry/>}/>'
+          pattern = re.compile(r'<Route\s+path=["\']/["\']\s+element=\{.*?\}\s*/>')
+          s2, n = pattern.subn(root_route, s, count=1)
+          if n == 0:
+              routes_marker = '<Routes>'
+              if routes_marker not in s:
+                  raise SystemExit('Routes block not found')
+              s2 = s.replace(routes_marker, routes_marker + root_route, 1)
+          s = s2
+
+          # Add the live API connection indicator exactly once.
+          if 'function ServerConnection(' not in s:
+              marker = 'function Shell('
+              status_component = '''function ServerConnection(){
+            const[ok,setOk]=useState<boolean|null>(null);
+            const[checkedAt,setCheckedAt]=useState(0);
+            const check=async()=>{
+              try{
+                const r=await fetch('/health',{credentials:'include',cache:'no-store'});
+                setOk(r.ok)
+              }catch{
+                setOk(false)
+              }
+              setCheckedAt(Date.now())
+            };
+            useEffect(()=>{
+              void check();
+              const id=window.setInterval(()=>void check(),15000);
+              return()=>window.clearInterval(id)
+            },[]);
+            const text=ok===null?'جارٍ الفحص':ok?'السيرفر متصل':'السيرفر غير متصل';
+            return <div className={`server-connection ${ok===true?'online':ok===false?'offline':'checking'}`} title={checkedAt?`آخر فحص: ${new Date(checkedAt).toLocaleTimeString('ar-EG')}`:'جاري الفحص'}><span className="server-dot"/><span>{text}</span></div>
+          }
+          '''
+              s = s.replace(marker, status_component + '\n' + marker, 1)
+
+          # Insert the status badge in the existing header actions.
+          if '<ServerConnection/>' not in s:
+              old = '<div className="top-actions"><div className="top-avatar">'
+              if old not in s:
+                  raise SystemExit('top-actions marker not found')
+              s = s.replace(old, '<div className="top-actions"><ServerConnection/><div className="top-avatar">', 1)
+
+          app.write_text(s)
+
+          c = css.read_text()
+          if '.server-connection{' not in c:
+              c += '''
+          .server-connection{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid #dfe5ef;border-radius:10px;background:#fff;font-size:12px;font-weight:700;white-space:nowrap}.server-dot{width:8px;height:8px;border-radius:50%;background:#94a3b8}.server-connection.online .server-dot{background:#16a34a}.server-connection.offline .server-dot{background:#dc2626}.server-connection.checking .server-dot{background:#f59e0b}
+          '''
+              css.write_text(c)
+          PY
+
+      - name: Install and verify
+        run: |
+          npm install
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Commit patch and remove temporary workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add apps/web/src/app.tsx apps/web/src/styles.css
+          git commit -m 'fix: route root separately and show server connection status'
+          git rm .github/workflows/apply-root-routing-and-server-status.yml
+          git commit -m 'chore: remove temporary routing patch workflow'
+          git push
