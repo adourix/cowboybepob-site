@@ -51,7 +51,11 @@ FROM cb_username_repair_targets r WHERE sa.id=r.allocation_id;
 UPDATE services s SET status='PROVISIONING', updated_at=now()
 FROM cb_username_repair_targets r WHERE s.id=r.service_id;
 
--- The permanent 4xx path already released capacity. Do NOT increment allocated_count here.
+-- The failed provider 4xx path released this allocation's capacity. Re-reserve it for retry.
+UPDATE server_endpoints e
+SET allocated_count=e.allocated_count+1, updated_at=now()
+FROM cb_username_repair_targets r WHERE e.id=r.endpoint_id;
+
 UPDATE order_items oi
 SET fulfillment_status='IN_PROGRESS', fulfillment_detail=NULL, result_service_id=r.service_id
 FROM cb_username_repair_targets r WHERE oi.id=r.origin_order_item_id;
