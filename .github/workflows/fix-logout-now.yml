@@ -7,7 +7,7 @@ permissions:
   contents: write
 jobs:
   fix:
-    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, 'logout session fix')
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, 'remove logout fix workflow')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,16 +25,14 @@ jobs:
           s=p.read_text()
           old="app.post('/api/v1/auth/logout', async (req: Req, reply) => { if (req.sessionId) await db('UPDATE auth_sessions SET revoked_at=now() WHERE id=$1', [req.sessionId]); reply.clearCookie('cb_session', { path: '/' }); reply.clearCookie('cb_csrf', { path: '/' }); return { ok: true }; });"
           new="app.post('/api/v1/auth/logout', async (req: Req, reply) => { const token=req.cookies?.cb_session; if (token) await db('UPDATE auth_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL',[sha(token)]); else if (req.sessionId) await db('UPDATE auth_sessions SET revoked_at=now() WHERE id=$1',[req.sessionId]); reply.header('Cache-Control','no-store'); reply.clearCookie('cb_session',{path:'/',httpOnly:true,secure:COOKIE_SECURE,sameSite:'lax'}); reply.clearCookie('cb_csrf',{path:'/',httpOnly:false,secure:COOKIE_SECURE,sameSite:'lax'}); return {ok:true}; });"
-          if old not in s:
-              raise SystemExit('logout route marker not found')
+          if old not in s: raise SystemExit('logout route marker not found')
           p.write_text(s.replace(old,new,1))
 
           p=Path('apps/web/src/app.tsx')
           s=p.read_text()
           old="function App(){const[user,setUser]=useState<User|null>(null);const[checking,setChecking]=useState(true);const logout=async()=>{try{await api('/api/v1/auth/logout',{method:'POST'})}catch{}setUser(null);window.location.assign('/')};"
           new="function App(){const[user,setUser]=useState<User|null>(null);const[checking,setChecking]=useState(true);const logout=async()=>{setChecking(true);try{await api('/api/v1/auth/logout',{method:'POST'})}catch(e:any){console.error('logout failed',e)}finally{setUser(null);setChecking(false);window.location.replace('/')}};"
-          if old not in s:
-              raise SystemExit('App logout marker not found')
+          if old not in s: raise SystemExit('App logout marker not found')
           p.write_text(s.replace(old,new,1))
           PY
       - run: npm install
@@ -46,7 +44,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add apps/api/src/main.ts apps/web/src/app.tsx
-          git commit -m "fix: logout session fix [skip ci]"
+          git commit -m "fix: apply reliable logout" 
           git rm .github/workflows/fix-logout-now.yml
-          git commit -m "chore: remove logout fix workflow [skip ci]"
+          git commit -m "chore: remove temporary logout workflow [skip ci]"
           git push origin main
