@@ -8,9 +8,16 @@ DROP INDEX IF EXISTS subscription_periods_item_uq;
 CREATE UNIQUE INDEX subscription_periods_item_uq
   ON subscription_periods(order_item_id);
 
--- Requeue renewals that were exhausted only because PostgreSQL rejected the
--- ON CONFLICT target. Other failures are intentionally left untouched.
-UPDATE jobs
+-- Requeue only renewals that were exhausted because PostgreSQL rejected the
+-- ON CONFLICT target. Other NEEDS_ATTENTION jobs are left untouched.
+CREATE TEMP TABLE cb_renewal_repair_targets ON COMMIT DROP AS
+SELECT id, subject_id
+FROM jobs
+WHERE type='renew_service'
+  AND state='NEEDS_ATTENTION'
+  AND last_error ILIKE '%there is no unique or exclusion constraint matching the ON CONFLICT specification%';
+
+UPDATE jobs j
 SET state='QUEUED',
     attempts=0,
     run_at=now(),
@@ -18,19 +25,13 @@ SET state='QUEUED',
     locked_by=NULL,
     last_error=NULL,
     updated_at=now()
-WHERE type='renew_service'
-  AND state='NEEDS_ATTENTION'
-  AND last_error ILIKE '%there is no unique or exclusion constraint matching the ON CONFLICT specification%';
+FROM cb_renewal_repair_targets r
+WHERE j.id=r.id;
 
 UPDATE order_items oi
 SET fulfillment_status='IN_PROGRESS',
     fulfillment_detail=NULL
-WHERE oi.id IN (
-  SELECT j.subject_id
-  FROM jobs j
-  WHERE j.type='renew_service'
-    AND j.state='QUEUED'
-    AND j.last_error IS NULL
-);
+FROM cb_renewal_repair_targets r
+WHERE oi.id=r.subject_id;
 
 COMMIT;
