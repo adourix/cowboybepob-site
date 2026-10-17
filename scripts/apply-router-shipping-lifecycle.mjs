@@ -85,11 +85,27 @@ const replaceOnce = (source, old, next, label) => {
     const marker = "const rejectPayment=async(id:string)=>{const reason=window.prompt('سبب رفض الدفع:','لم يتم استلام/مطابقة التحويل');if(reason===null)return;setLoading(true);setError('');try{await api(`/api/v1/admin/payments/${id}/reject`,{method:'POST',body:JSON.stringify({reason})});await load()}catch(e:any){setError(e.message)}finally{setLoading(false)}};";
     const funcs = marker + "const shipRouterOrder=async(id:string)=>{if(!window.confirm('تأكيد شحن طلب الراوتر؟'))return;setLoading(true);setError('');try{await api(`/api/v1/admin/orders/${id}/ship`,{method:'POST',body:JSON.stringify({})});await load()}catch(e:any){setError(e.message)}finally{setLoading(false)}};const deliverRouterOrder=async(id:string)=>{if(!window.confirm('تأكيد استلام العميل للراوتر؟ سيتم إكمال الطلب.'))return;setLoading(true);setError('');try{await api(`/api/v1/admin/orders/${id}/deliver`,{method:'POST',body:JSON.stringify({})});await load()}catch(e:any){setError(e.message)}finally{setLoading(false)}};";
     s = replaceOnce(s, marker, funcs, 'UI order action functions');
-    s = replaceOnce(s, "{['services','subscriptions','routers','servers','payments'].includes(kind)&&<td>", "{['services','subscriptions','routers','servers','payments','orders'].includes(kind)&&<td>", 'UI order action column');
-    s = replaceOnce(s,
-      "{kind==='payments'&&String(row.status)==='PENDING'&&<><button className=\"small-button\" onClick={()=>confirmPayment(row.id)}>تأكيد الدفع</button><button className=\"small-button danger\" onClick={()=>rejectPayment(row.id)}>رفض</button></>}",
-      "{kind==='payments'&&String(row.status)==='PENDING'&&<><button className=\"small-button\" onClick={()=>confirmPayment(row.id)}>تأكيد الدفع</button><button className=\"small-button danger\" onClick={()=>rejectPayment(row.id)}>رفض</button></>}{kind==='orders'&&row.router_only&&String(row.status)==='FULFILLING'&&<button className=\"small-button\" onClick={()=>shipRouterOrder(row.id)}>شحن الطلب</button>}{kind==='orders'&&row.router_only&&String(row.status)==='SHIPPED'&&<button className=\"small-button\" onClick={()=>deliverRouterOrder(row.id)}>تم التسليم</button>}",
-      'UI order action buttons');
+
+    // The action-column implementation has changed several times. Match it structurally
+    // instead of relying on one exact quote/spacing variant.
+    const actionColumn = /\{\[([^\]]*payments[^\]]*)\]\.includes\(kind\)&&<td>/;
+    const actionMatch = s.match(actionColumn);
+    if (actionMatch && !actionMatch[1].includes('orders')) {
+      const updated = actionMatch[1].trimEnd() + ",'orders'";
+      s = s.replace(actionMatch[0], `{[${updated}].includes(kind)&&<td>`);
+    }
+
+    const paymentAction = "{kind==='payments'&&String(row.status)==='PENDING'&&<><button className=\"small-button\" onClick={()=>confirmPayment(row.id)}>تأكيد الدفع</button><button className=\"small-button danger\" onClick={()=>rejectPayment(row.id)}>رفض</button></>}";
+    const orderActions = "{kind==='orders'&&row.router_only&&String(row.status)==='FULFILLING'&&<button className=\"small-button\" onClick={()=>shipRouterOrder(row.id)}>شحن الطلب</button>}{kind==='orders'&&row.router_only&&String(row.status)==='SHIPPED'&&<button className=\"small-button\" onClick={()=>deliverRouterOrder(row.id)}>تم التسليم</button>}";
+    if (!s.includes(orderActions)) {
+      if (s.includes(paymentAction)) s = s.replace(paymentAction, paymentAction + orderActions);
+      else {
+        // Fallback: add the controls immediately after the order status cell.
+        const orderStatusCell = /\{label\(row\.status\)\}<\/td>/;
+        if (!orderStatusCell.test(s)) throw new Error('Missing patch marker: UI order action insertion');
+        s = s.replace(orderStatusCell, `{label(row.status)}</td><td>${orderActions}`);
+      }
+    }
     write(p, s);
   }
 }
