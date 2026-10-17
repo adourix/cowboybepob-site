@@ -1,0 +1,90 @@
+name: apply-ui-server-fix
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(git log -1 --pretty=%s)" == "fix: route root separately and show server connection status" ]]; then
+            echo "Patch already applied; nothing to do."
+            exit 0
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          app = Path('apps/web/src/app.tsx')
+          css = Path('apps/web/src/styles.css')
+          s = app.read_text()
+
+          # Remove a partial RootEntry from an earlier attempt, if present.
+          s = re.sub(r'function RootEntry\(\)\{.*?\n\}\n\nfunction Shell\(', 'function Shell(', s, count=1, flags=re.S)
+
+          root_component = '''function RootEntry(){const[checking,setChecking]=useState(true);const[user,setUser]=useState<User|null>(null);useEffect(()=>{void api('/api/v1/auth/me').then(x=>setUser(x.user||null)).catch(()=>setUser(null)).finally(()=>setChecking(false))},[]);if(checking)return <div className="auth-page"><div className="auth-card"><h1>CowboyBepob</h1><p>جارٍ التحقق من الاتصال والجلسة...</p></div></div>;return user?<div className="auth-page"><div className="auth-card"><div className="brand-inline"><div className="brand-mark"><Globe2 size={20}/></div><b>CowboyBepob</b></div><h1>مرحبًا بعودتك</h1><p>أنت مسجل الدخول بالفعل.</p><div className="alert success">الحساب: {user.email}</div><a className="primary-button full" href={user.type==='STAFF'?'/admin':'/customer'}>{user.type==='STAFF'?'فتح لوحة الإدارة':'فتح بوابة العميل'}</a></div></div>:<Auth onLogin={u=>{window.location.assign(u.type==='STAFF'?'/admin':'/customer')}}/>}'''
+
+          if 'function RootEntry(' not in s:
+              marker = 'function Shell('
+              if marker not in s:
+                  raise SystemExit('Shell marker not found')
+              s = s.replace(marker, root_component + '\n' + marker, 1)
+
+          # Replace only the exact root route; never touch /admin or /customer routes.
+          route = '<Route path="/" element={<RootEntry/>}/>'
+          pattern = re.compile(r'<Route\s+path=["\']/["\']\s+element=\{.*?\}\s*/>')
+          s2, count = pattern.subn(route, s, count=1)
+          if count == 0:
+              if '<Routes>' not in s:
+                  raise SystemExit('Routes block not found')
+              s2 = s.replace('<Routes>', '<Routes>' + route, 1)
+          s = s2
+
+          # Add the live API health indicator once.
+          if 'function ServerConnection(' not in s:
+              marker = 'function Shell('
+              status = '''function ServerConnection(){const[ok,setOk]=useState<boolean|null>(null);const[checkedAt,setCheckedAt]=useState(0);const check=async()=>{try{const r=await fetch('/health',{credentials:'include',cache:'no-store'});setOk(r.ok)}catch{setOk(false)}setCheckedAt(Date.now())};useEffect(()=>{void check();const id=window.setInterval(()=>void check(),15000);return()=>window.clearInterval(id)},[]);const text=ok===null?'جارٍ الفحص':ok?'السيرفر متصل':'السيرفر غير متصل';return <div className={`server-connection ${ok===true?'online':ok===false?'offline':'checking'}`} title={checkedAt?`آخر فحص: ${new Date(checkedAt).toLocaleTimeString('ar-EG')}`:'جاري الفحص'}><span className="server-dot"/><span>{text}</span></div>}'''
+              if marker not in s:
+                  raise SystemExit('Shell marker not found for server status')
+              s = s.replace(marker, status + '\n' + marker, 1)
+
+          if '<ServerConnection/>' not in s:
+              old = '<div className="top-actions"><div className="top-avatar">'
+              if old not in s:
+                  raise SystemExit('top-actions marker not found')
+              s = s.replace(old, '<div className="top-actions"><ServerConnection/><div className="top-avatar">', 1)
+
+          app.write_text(s)
+
+          c = css.read_text()
+          if '.server-connection{' not in c:
+              c += '\n.server-connection{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid #dfe5ef;border-radius:10px;background:#fff;font-size:12px;font-weight:700;white-space:nowrap}.server-dot{width:8px;height:8px;border-radius:50%;background:#94a3b8}.server-connection.online .server-dot{background:#16a34a}.server-connection.offline .server-dot{background:#dc2626}.server-connection.checking .server-dot{background:#f59e0b}\n'
+              css.write_text(c)
+          PY
+
+      - name: Verify
+        run: |
+          npm install
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Commit verified patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add apps/web/src/app.tsx apps/web/src/styles.css
+          git commit -m 'fix: route root separately and show server connection status'
+          git push
