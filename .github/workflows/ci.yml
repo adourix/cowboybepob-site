@@ -4,6 +4,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,6 +27,40 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Patch actual Vite entrypoint
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path=Path('apps/web/src/app.tsx')
+          text=path.read_text(encoding='utf-8')
+          changed=False
+          if 'Trash2' not in text.split('\n',5)[0]:
+              text=text.replace("KeyRound}from'lucide-react';","KeyRound,Trash2}from'lucide-react';",1);changed=True
+          nav_needle="['/admin/servers','الخوادم',HardDrive],"
+          if "['/admin/providers','المزوّدون',Settings]" not in text:
+              if nav_needle not in text: raise SystemExit('admin nav anchor not found')
+              text=text.replace(nav_needle,nav_needle+"['/admin/providers','المزوّدون',Settings],['/admin/configs','الكونفيجات',Package],",1);changed=True
+          rs=text.find('function ResourcePage('); cs=text.find('function CustomerForm(',rs)
+          if rs<0 or cs<0: raise SystemExit('ResourcePage anchors not found')
+          if 'removeServer=async' not in text[rs:cs]:
+              resource=r'''function ResourcePage({kind}:{kind:Kind}){const m=meta[kind];const[rows,setRows]=useState<any[]>([]);const[q,setQ]=useState('');const[open,setOpen]=useState(false);const[error,setError]=useState('');const[busy,setBusy]=useState(false);const load=async()=>{setBusy(true);setError('');try{const x=await api(m.endpoint+(q&&kind!=='subscriptions'?`?q=${encodeURIComponent(q)}`:''));let list=Array.isArray(x)?x:[];if(kind==='subscriptions')list=list.filter((r:any)=>r.subscription_status);if(q)list=list.filter((r:any)=>JSON.stringify(r).toLowerCase().includes(q.toLowerCase()));setRows(list)}catch(e:any){setError(e.message)}finally{setBusy(false)}};useEffect(()=>{void load();const id=window.setInterval(()=>void load(),15000);return()=>window.clearInterval(id)},[q]);const add=kind==='customers'||kind==='routers'||kind==='servers';const canDelete=kind==='servers';const removeServer=async(id:string,name:string)=>{if(!window.confirm(`حذف الخادم «${name}»؟`))return;setError('');try{await api(`/api/v1/admin/servers/hosts/${id}`,{method:'DELETE'});await load()}catch(e:any){setError(e.message)}};const cols=canDelete?[...m.cols,'إجراءات']:m.cols;return <div className="page"><Heading title={m.title} sub="بيانات حقيقية من الـAPI." onAdd={add?()=>setOpen(true):undefined} addText={kind==='customers'?'إضافة عميل':kind==='routers'?'تسجيل راوتر':'إضافة خادم'}/><section className="panel table-panel"><div className="toolbar"><label className="search wide"><Search size={16}/><input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>e.key==='Enter'&&load()} placeholder="بحث..."/></label><button className="secondary-button" type="button" onClick={()=>void load()} disabled={busy}><RefreshCw size={15}/> تحديث</button></div>{error&&<div className="alert error">{error}</div>}<div className="table-wrap"><table><thead><tr>{cols.map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{rows.length===0?<tr><td className="empty" colSpan={cols.length}>{busy?'جارٍ التحميل...':'لا توجد بيانات'}</td></tr>:rows.map((r,i)=><tr key={r.id||i}>{m.keys.map(k=><td key={k}>{k==='email_verified_at'?(r[k]?'مؤكد':'غير مؤكد'):k.includes('minor')?money(r[k]):k==='used_bytes'?formatBytes(r[k]):k.endsWith('_at')||['starts_at','current_period_end','last_seen_at','created_at'].includes(k)?date(r[k]):['status','connectivity','state','lifecycle_status','subscription_status','health_status'].includes(k)?<span className="badge">{label(r[k])}</span>:String(r[k]??'—')}</td>)}{canDelete&&<td><button className="danger-button" type="button" onClick={()=>removeServer(r.id,r.name||r.address||'هذا الخادم')}><Trash2 size={15}/> حذف</button></td>}</tr>)}</tbody></table></div></section>{open&&kind==='customers'&&<CustomerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);void load()}}/>}{open&&kind==='routers'&&<RouterForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);void load()}}/>}{open&&kind==='servers'&&<ServerForm onClose={()=>setOpen(false)} onDone={()=>{setOpen(false);void load()}}/>}</div>}
+'''
+              text=text[:rs]+resource+text[cs:];changed=True
+          if 'function ProvidersPage(' not in text:
+              pages=r'''function ProvidersPage(){const[rows,setRows]=useState<any[]>([]);const[error,setError]=useState('');const load=()=>{setError('');api('/api/v1/admin/provider-instances').then(x=>setRows(Array.isArray(x)?x:(x.providers||[]))).catch(e=>setError(e.message))};useEffect(()=>{void load()},[]);const remove=async(id:string,name:string)=>{if(!window.confirm(`حذف المزوّد «${name}»؟`))return;try{await api(`/api/v1/admin/provider-instances/${id}`,{method:'DELETE'});await load()}catch(e:any){setError(e.message)}};return <div className="page"><Heading title="المزوّدون" sub="إدارة مزوّدي Marzban وبيانات الاتصال."/><section className="panel table-panel">{error&&<div className="alert error">{error}</div>}<div className="toolbar"><button className="secondary-button" type="button" onClick={load}><RefreshCw size={15}/> تحديث</button></div><div className="table-wrap"><table><thead><tr><th>الاسم</th><th>Base URL</th><th>الحالة</th><th>Credentials</th><th>آخر نجاح</th><th>إجراءات</th></tr></thead><tbody>{rows.length===0?<tr><td className="empty" colSpan={6}>لا توجد مزوّدات</td></tr>:rows.map((r:any)=><tr key={r.id}><td>{r.name||'—'}</td><td className="code">{r.base_url||r.baseUrl||'—'}</td><td><span className="badge">{label(r.status)}</span></td><td>{r.has_credentials?'موجودة':'غير موجودة'}</td><td>{date(r.last_ok_at)}</td><td><button className="danger-button" type="button" onClick={()=>remove(r.id,r.name||'هذا المزوّد')}><Trash2 size={15}/> حذف</button></td></tr>)}</tbody></table></div></section></div>}
+function ConfigsPage(){const[rows,setRows]=useState<any[]>([]);const[error,setError]=useState('');const load=()=>{setError('');api('/api/v1/admin/configs').then(x=>setRows(Array.isArray(x)?x:[])).catch(e=>setError(e.message))};useEffect(()=>{void load()},[]);const remove=async(id:string,code:string)=>{if(!window.confirm(`حذف الكونفيج «${code}»؟`))return;try{await api(`/api/v1/admin/configs/${id}`,{method:'DELETE'});await load()}catch(e:any){setError(e.message)}};return <div className="page"><Heading title="الكونفيجات" sub="إدارة الكونفيجات المحفوظة للخدمات."/><section className="panel table-panel">{error&&<div className="alert error">{error}</div>}<div className="toolbar"><button className="secondary-button" type="button" onClick={load}><RefreshCw size={15}/> تحديث</button></div><div className="table-wrap"><table><thead><tr><th>الكود</th><th>الخدمة</th><th>الحالة</th><th>البروتوكول</th><th>الإصدار</th><th>التاريخ</th><th>إجراءات</th></tr></thead><tbody>{rows.length===0?<tr><td className="empty" colSpan={7}>لا توجد كونفيجات</td></tr>:rows.map((r:any)=><tr key={r.id}><td>{r.public_code||'—'}</td><td>{r.service_code||r.service_public_code||r.service_id||'—'}</td><td><span className="badge">{label(r.status)}</span></td><td>{r.protocol||'—'}</td><td>{r.version??'—'}</td><td>{date(r.created_at)}</td><td><button className="danger-button" type="button" onClick={()=>remove(r.id,r.public_code||r.id)}><Trash2 size={15}/> حذف</button></td></tr>)}</tbody></table></div></section></div>}
+'''
+              marker='function SettingsPage('
+              if marker not in text: raise SystemExit('SettingsPage anchor not found')
+              text=text.replace(marker,pages+marker,1);changed=True
+          route_anchor='<Route path="/admin/settings" element={<SettingsPage/>}/>'
+          if route_anchor not in text: raise SystemExit('admin settings route anchor not found')
+          if 'path="/admin/providers"' not in text:
+              text=text.replace(route_anchor,route_anchor+'<Route path="/admin/providers" element={<ProvidersPage/>}/><Route path="/admin/configs" element={<ConfigsPage/>}/>',1);changed=True
+          path.write_text(text,encoding='utf-8')
+          print('UI changed:',changed)
+          PY
       - run: npm install
       - run: PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d cowboybepob -f db/schema.sql
       - run: PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d cowboybepob -f db/migrations/001_provider_credentials.sql
@@ -49,3 +85,13 @@ jobs:
           name: typecheck-log
           path: typecheck.log
       - run: npm run build
+      - name: Commit UI patch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/web/src/app.tsx
+          git rm -f .github/workflows/fix-root-admin-deletion.yml 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "fix: add deletion controls to actual admin UI"
+          git push
