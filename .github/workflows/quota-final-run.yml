@@ -1,0 +1,36 @@
+name: Final quota pricing implementation
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply quota implementation
+        run: python3 scripts/finalize_quota_pricing.py
+      - name: Install dependencies
+        run: npm install --include=dev
+      - name: Build
+        run: npm run build
+      - name: Commit final source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add db/schema.sql db/migrations/20261018_variable_quota_pricing.sql apps/api/src/main.ts apps/api/src/worker.ts apps/web/src/app.tsx
+          git commit -m "feat: add customer-selectable quota pricing"
+          git push
+          git rm .github/workflows/quota-final-run.yml .github/workflows/quota-pricing-implementation.yml .github/workflows/finalize-quota-pricing.yml scripts/finalize_quota_pricing.py scripts/apply_quota_pricing.py
+          git commit -m "chore: remove temporary quota pricing workflows"
+          git push
