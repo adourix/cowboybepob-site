@@ -45,6 +45,8 @@ jobs:
           PY
       - name: Apply quota implementation
         run: python3 scripts/finalize_quota_pricing_v2.py
+      - name: Inspect generated API
+        run: nl -ba apps/api/src/main.ts | sed -n '235,250p'
       - name: Install dependencies
         run: npm install --include=dev
       - name: Build
