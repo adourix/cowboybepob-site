@@ -26,6 +26,34 @@ jobs:
         with:
           node-version: 22
       - run: npm install
+      - name: Prepare quota implementation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          script=Path('scripts/finalize_quota_pricing_v2.py')
+          s=script.read_text()
+          s=re.sub(r"\nsub_once\('apps/api/src/main.ts',r\"json_build_object.*?\n\norder_route=", "\norder_route=", s, flags=re.S)
+          s=re.sub(r"\norder_route=.*?\nsub_once\('apps/api/src/main.ts',r\"  customer\\.post.*?\n\nw=Path", "\n\nw=Path", s, flags=re.S)
+          s=s.replace(',1,re.S)', ',re.S)')
+          script.write_text(s)
+          p=Path('apps/api/src/main.ts'); src=p.read_text()
+          pattern=r"customer\.get\('/catalog/categories', async \(\) => \(await db\(`.*?`\)\)\.rows\);"
+          replacement="customer.get('/catalog/categories', async () => (await db(`SELECT c.id,c.name,c.slug,c.description,c.protocol,c.router_compatible,c.link_visibility,json_agg(json_build_object('id',p.id,'name',p.name,'durationDays',p.duration_days,'priceMinor',p.price_minor,'currency',p.currency,'quotaBytes',p.quota_bytes,'quotaPricingMode',p.quota_pricing_mode,'quotaPricePerGbMinor',p.quota_price_per_gb_minor,'minQuotaGb',p.min_quota_gb,'maxQuotaGb',p.max_quota_gb,'quotaStepGb',p.quota_step_gb) ORDER BY p.duration_days) FILTER(WHERE p.id IS NOT NULL) plans FROM config_categories c LEFT JOIN config_plans p ON p.category_id=c.id AND p.status='ACTIVE' WHERE c.status='ACTIVE' GROUP BY c.id ORDER BY c.display_order,c.name`)).rows);"
+          src,n=re.subn(pattern,replacement,src,count=1,flags=re.S)
+          if n!=1: raise SystemExit('customer catalog route not found')
+          marker="subtotal+=Number(p.rows[0].price_minor);"
+          if marker not in src: raise SystemExit('order subtotal marker not found')
+          pricing="let plan=p.rows[0];let quotaBytes=plan.quota_bytes;let quotaGb=plan.quota_bytes?Math.round(Number(plan.quota_bytes)/1073741824):null;let price=Number(plan.price_minor);if(String(plan.quota_pricing_mode)==='PER_GB'){const requested=Number(item.quotaGb??quotaGb??plan.min_quota_gb);if(!Number.isInteger(requested)||requested<=0)throw Object.assign(new Error('اختر عدد جيجات صحيحًا.'),{statusCode:400});if(plan.min_quota_gb!==null&&requested<Number(plan.min_quota_gb))throw Object.assign(new Error(`الحد الأدنى لهذه الباقة ${plan.min_quota_gb} جيجا.`),{statusCode:400});if(plan.max_quota_gb!==null&&requested>Number(plan.max_quota_gb))throw Object.assign(new Error(`الحد الأقصى لهذه الباقة ${plan.max_quota_gb} جيجا.`),{statusCode:400});const step=Number(plan.quota_step_gb||1),min=Number(plan.min_quota_gb||requested);if((requested-min)%step!==0)throw Object.assign(new Error(`اختر عدد جيجات بمضاعفات ${step} بدءًا من ${min} جيجا.`),{statusCode:400});quotaGb=requested;quotaBytes=requested*1073741824;price=requested*Number(plan.quota_price_per_gb_minor);}"
+          src=src.replace(marker,pricing+marker,1).replace(marker,'subtotal+=price;',1)
+          src=src.replace("price:Number(p.rows[0].price_minor)","price,quotaBytes,quotaGb",1)
+          src=src.replace("INSERT INTO order_items(order_id,item_type,router_product_id,plan_id,landline_id,use_with_router,name_snapshot,unit_price_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8)","INSERT INTO order_items(order_id,item_type,router_product_id,plan_id,landline_id,use_with_router,name_snapshot,unit_price_minor,quota_bytes,quota_gb) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",1)
+          src=src.replace("[o.rows[0].id,item.type,item.routerProductId||null,item.planId||null,item.landlineId||null,item.useWithRouter||false,item.name,item.price]);","[o.rows[0].id,item.type,item.routerProductId||null,item.planId||null,item.landlineId||null,item.useWithRouter||false,item.name,item.price,item.quotaBytes||null,item.quotaGb||null]);",1)
+          p.write_text(src)
+          PY
+      - run: python3 scripts/finalize_quota_pricing_v2.py
+      - name: Inspect generated API
+        run: nl -ba apps/api/src/main.ts | sed -n '235,250p'
       - run: PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d cowboybepob -f db/schema.sql
       - run: PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d cowboybepob -f db/migrations/001_provider_credentials.sql
       - run: PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d cowboybepob -f db/migrations/002_email_verification.sql
