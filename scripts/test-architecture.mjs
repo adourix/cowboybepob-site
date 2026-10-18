@@ -8,7 +8,10 @@ const worker = await read('apps/api/src/worker-v2.ts');
 const workerPackage = JSON.parse(await read('apps/api/package.json'));
 const endpointSync = await read('apps/api/src/endpointSync.ts');
 const marzban = await read('apps/api/src/marzban.ts');
-const web = await read('apps/web/src/main.tsx');
+// app.tsx is the real entry (index.html loads /src/app.tsx); main.tsx is a stale copy.
+const web = await read('apps/web/src/app.tsx');
+const portal = await read('apps/web/src/customer/Portal.tsx');
+const selection = await read('apps/web/src/customer/selection.ts');
 const css = await read('apps/web/src/styles.css');
 
 function contains(source, value, message){
@@ -69,7 +72,14 @@ contains(web, 'CustomerPortal', 'customer portal missing');
 contains(web, '/admin/services', 'admin services page missing');
 contains(web, '/admin/routers', 'admin routers page missing');
 contains(web, '/admin/servers', 'admin servers page missing');
-contains(css, 'margin-left:264px', 'desktop sidebar layout regression detected');
+contains(css, 'grid-template-columns:272px', 'desktop admin sidebar layout regression detected');
+contains(portal, "'/customer/services'", 'customer services shop route missing');
+contains(portal, "'/customer/orders'", 'customer orders route missing');
+contains(selection, 'export function selectPrimaryService', 'primary service selection helper missing');
+contains(selection, 'export function selectLeftConfigService', 'config-access selection helper missing');
+contains(api, "'/orders/:id/cancel'", 'customer order cancel route missing');
+contains(web, '/verify-email', 'email verification landing route missing');
+contains(web, '/reset-password', 'password reset landing route missing');
 assert.doesNotMatch(web, /docker-compose|Docker Desktop/, 'web UI must not depend on Docker');
 
 console.log(`Architecture smoke tests passed: ${requiredTables.length} tables + API/worker/UI/provider invariants.`);

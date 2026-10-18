@@ -4,29 +4,11 @@ import { BrowserRouter, useNavigate, useLocation, NavLink, Routes, Route } from 
 import { Box, Check, Copy, CreditCard, ExternalLink, HardDrive, LayoutDashboard, LogOut, Menu, Network, Package, Plus, RefreshCw, Search, Settings, ShieldCheck, ShoppingCart, Users, Wifi, Workflow, Trash2, X } from 'lucide-react';
 import './styles.css';
 
-/* ───────────── API ───────────── */
-const API = import.meta.env.VITE_API_URL || '/';
-function csrfToken() {
-  const raw = document.cookie.split('; ').find(x => x.startsWith('cb_csrf='))?.split('=')[1];
-  if (!raw) return '';
-  try { return decodeURIComponent(raw); } catch { return raw; }
-}
-async function api(path: string, init: RequestInit = {}) {
-  const h = new Headers(init.headers);
-  if (init.body != null) h.set('content-type', 'application/json');
-  const csrf = csrfToken();
-  if (csrf && init.method && init.method !== 'GET') h.set('x-csrf-token', csrf);
-  const r = await fetch(API.replace(/\/$/, '') + path, { ...init, headers: h, credentials: 'include' });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-  return data;
-}
+import { api, date, label, money, User } from './lib/api';
+import { CustomerPortal } from './customer/Portal';
+import { LoginScreen, RegisterScreen, ResetPasswordScreen, VerifyEmailScreen } from './auth/Auth';
+import './customer.css';
 
-/* ───────────── Formatting ───────────── */
-const money = (v: any, c = 'EGP') => `${(Number(v || 0) / 100).toLocaleString('ar-EG', { maximumFractionDigits: 2 })} ${c}`;
-const date = (v: any) => v ? new Date(v).toLocaleString('ar-EG', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
-const labels: Record<string, string> = { ACTIVE: 'نشط', PROVISIONING: 'قيد التجهيز', SUSPENDED: 'موقوف', TERMINATED: 'منتهٍ', READY: 'جاهز', ASSIGNED: 'مُسند', IN_STOCK: 'في المخزن', READY_TO_SHIP: 'جاهز للشحن', SHIPPED: 'تم الشحن', ONLINE: 'متصل', OFFLINE: 'غير متصل', UNKNOWN: 'غير معروف', PAID: 'مدفوع', FULFILLING: 'قيد التنفيذ', COMPLETED: 'مكتمل', PENDING_PAYMENT: 'بانتظار الدفع', NEEDS_ATTENTION: 'يحتاج تدخل', SUCCEEDED: 'ناجح', INITIATED: 'مبدئي', QUEUED: 'في الانتظار', RUNNING: 'قيد التشغيل', FAILED: 'فشل', CANCELLED: 'ملغى' };
-const label = (v: any) => labels[String(v)] || v || '—';
 const TONE: Record<string, 'ok' | 'warn' | 'bad'> = {
   ACTIVE: 'ok', READY: 'ok', ONLINE: 'ok', PAID: 'ok', SUCCEEDED: 'ok', COMPLETED: 'ok', HEALTHY: 'ok', CURRENT: 'ok', SHIPPED: 'ok',
   PROVISIONING: 'warn', ASSIGNED: 'warn', IN_STOCK: 'warn', READY_TO_SHIP: 'warn', FULFILLING: 'warn', PENDING_PAYMENT: 'warn', INITIATED: 'warn', PENDING: 'warn', QUEUED: 'warn', RUNNING: 'warn', DEGRADED: 'warn', DRAINING: 'warn', MAINTENANCE: 'warn',
@@ -35,7 +17,6 @@ const TONE: Record<string, 'ok' | 'warn' | 'bad'> = {
 function Status({ v }: { v: any }) {
   return <span className={`status ${TONE[String(v)] || 'idle'}`}><i aria-hidden />{label(v)}</span>;
 }
-type User = { type: 'STAFF' | 'CUSTOMER'; id: string; role?: string; email: string; fullName: string };
 
 const reducedMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
@@ -126,44 +107,6 @@ function Panel({ title, sub, action, children, className = '' }: { title?: strin
     {(title || action) && <div className="panel-head"><div>{title && <h2>{title}</h2>}{sub && <p>{sub}</p>}</div>{action}</div>}
     {children}
   </section>;
-}
-
-/* ───────────── Login ───────────── */
-function Login({ onLogin }: { onLogin: (u: User) => void }) {
-  const [kind, setKind] = useState<'staff' | 'customer'>('staff');
-  const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [otp, setOtp] = useState('');
-  const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
-  const submit = async (e: FormEvent) => {
-    e.preventDefault(); setError(''); setBusy(true);
-    try { const x = await api('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password, otp, kind }) }); onLogin(x.user); }
-    catch (e: any) { setError(e.message); } finally { setBusy(false); }
-  };
-  return <div className="auth">
-    <div className="auth-visual" aria-hidden>
-      <img src="/bebop/mars.webp" alt="" />
-      <div className="auth-blocks"><span /><span /><span /><span /></div>
-      <div className="auth-mark">
-        <Logo size={120} />
-        <strong>CowboyBepob</strong>
-        <p dir="rtl">بروكسي وراوترات جاهزة، من البوابة إلى بيتك.</p>
-      </div>
-    </div>
-    <div className="auth-side">
-      <form className="auth-card" onSubmit={submit}>
-        <div className="auth-card-top"><Logo size={36} /><b>CowboyBepob</b></div>
-        <h1>تسجيل الدخول</h1>
-        <div className="segmented" role="tablist">
-          <button type="button" role="tab" aria-selected={kind === 'staff'} className={kind === 'staff' ? 'on' : ''} onClick={() => setKind('staff')}>الموظفون</button>
-          <button type="button" role="tab" aria-selected={kind === 'customer'} className={kind === 'customer' ? 'on' : ''} onClick={() => setKind('customer')}>العملاء</button>
-        </div>
-        <label className="field"><span>البريد الإلكتروني</span><input value={email} onChange={e => setEmail(e.target.value)} type="email" autoComplete="email" required /></label>
-        <label className="field"><span>كلمة المرور</span><input value={password} onChange={e => setPassword(e.target.value)} type="password" autoComplete="current-password" required /></label>
-        {kind === 'staff' && <label className="field"><span>رمز Authenticator</span><input value={otp} onChange={e => setOtp(e.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="123456" required /></label>}
-        {error && <div className="alert error">{error}</div>}
-        <button className="btn btn-signal btn-full" type="submit" disabled={busy}>{busy ? 'جارٍ التحقق…' : 'دخول'}</button>
-      </form>
-    </div>
-  </div>;
 }
 
 /* ───────────── Admin shell ───────────── */
@@ -401,7 +344,7 @@ function Catalog() {
   useEffect(() => { void load(); }, []);
   const { error, saving, save } = useSave(async () => {
     const path = kind === 'category' ? '/api/v1/admin/catalog/categories' : kind === 'plan' ? '/api/v1/admin/catalog/plans' : '/api/v1/admin/catalog/router-products';
-    const body = kind === 'category' ? v : kind === 'plan' ? { ...v, durationDays: Number(v.durationDays), priceMinor: v.quotaPricingMode === 'PER_GB' ? Math.round(Number(v.quotaGb || v.minQuotaGb) * Number(v.quotaPricePerGb) * 100) : Math.round(Number(v.priceMinor || 0)), quotaBytes: v.quotaGb ? Math.round(Number(v.quotaGb) * 1073741824) : null, quotaPricingMode: v.quotaPricingMode, quotaPricePerGbMinor: v.quotaPricingMode === 'PER_GB' ? Math.round(Number(v.quotaPricePerGb) * 100) : null, minQuotaGb: v.quotaPricingMode === 'PER_GB' ? Number(v.minQuotaGb) : null, maxQuotaGb: v.quotaPricingMode === 'PER_GB' && v.maxQuotaGb !== '' ? Number(v.maxQuotaGb) : null, quotaStepGb: v.quotaPricingMode === 'PER_GB' ? Number(v.quotaStepGb || 1) : 1 } : { ...v, priceMinor: Number(v.priceMinor) };
+    const body = kind === 'router' ? { sku: v.sku, name: v.name, model: v.model, priceMinor: Number(v.priceMinor), brand: v.brand, imageUrl: v.imageUrl, featured: !!v.featured, specs: { speed: v.speed, bands: v.bands, connection: v.connection, maxDevices: v.maxDevices, protocols: v.protocols } } : kind === 'category' ? v : kind === 'plan' ? { ...v, durationDays: Number(v.durationDays), priceMinor: v.quotaPricingMode === 'PER_GB' ? Math.round(Number(v.quotaGb || v.minQuotaGb) * Number(v.quotaPricePerGb) * 100) : Math.round(Number(v.priceMinor || 0)), quotaBytes: v.quotaGb ? Math.round(Number(v.quotaGb) * 1073741824) : null, quotaPricingMode: v.quotaPricingMode, quotaPricePerGbMinor: v.quotaPricingMode === 'PER_GB' ? Math.round(Number(v.quotaPricePerGb) * 100) : null, minQuotaGb: v.quotaPricingMode === 'PER_GB' ? Number(v.minQuotaGb) : null, maxQuotaGb: v.quotaPricingMode === 'PER_GB' && v.maxQuotaGb !== '' ? Number(v.maxQuotaGb) : null, quotaStepGb: v.quotaPricingMode === 'PER_GB' ? Number(v.quotaStepGb || 1) : 1 } : v;
     await api(path, { method: 'POST', body: JSON.stringify(body) }); setKind(''); setV(blank); load();
   });
   const gb = (b: any) => Math.round(Number(b) / 1073741824);
@@ -432,8 +375,13 @@ function Catalog() {
         </>}
       </> : <>
         <div className="field-pair"><Field label="SKU" value={v.sku || ''} onChange={x => setV({ ...v, sku: x })} /><Field label="الموديل" value={v.model || ''} onChange={x => setV({ ...v, model: x })} /></div>
-        <Field label="الاسم" value={v.name || ''} onChange={x => setV({ ...v, name: x })} />
-        <Field label="السعر بالقرش" value={v.priceMinor} onChange={x => setV({ ...v, priceMinor: x })} type="number" />
+        <div className="field-pair"><Field label="الاسم" value={v.name || ''} onChange={x => setV({ ...v, name: x })} /><Field label="الشركة المصنعة" value={v.brand || ''} onChange={x => setV({ ...v, brand: x })} placeholder="OpenWrt / MikroTik" /></div>
+        <Field label="السعر بالجنيه" value={v.priceMinor ? Number(v.priceMinor) / 100 : ''} onChange={x => setV({ ...v, priceMinor: Math.round(Number(x) * 100) })} type="number" />
+        <div className="field-pair"><Field label="السرعة" value={v.speed || ''} onChange={x => setV({ ...v, speed: x })} placeholder="1000 Mbps" /><Field label="الترددات" value={v.bands || ''} onChange={x => setV({ ...v, bands: x })} placeholder="5 GHz / 2.4 GHz" /></div>
+        <div className="field-pair"><Field label="نوع الاتصال" value={v.connection || ''} onChange={x => setV({ ...v, connection: x })} placeholder="Fiber / DSL" /><Field label="أقصى عدد أجهزة" value={v.maxDevices || ''} onChange={x => setV({ ...v, maxDevices: x })} type="number" /></div>
+        <Field label="البروتوكولات" value={v.protocols || ''} onChange={x => setV({ ...v, protocols: x })} placeholder="VLESS / VMess" />
+        <Field label="رابط صورة المنتج (اختياري)" value={v.imageUrl || ''} onChange={x => setV({ ...v, imageUrl: x })} placeholder="/bebop/router-kt.webp" />
+        <label className="field check-field"><input type="checkbox" checked={!!v.featured} onChange={e => setV({ ...v, featured: e.target.checked })} /><span>عرض شارة «موصى به» في المتجر</span></label>
       </>}
       {error && <div className="alert error">{error}</div>}
       <button className="btn btn-signal btn-full" disabled={saving}>{saving ? 'جارٍ الحفظ…' : 'حفظ'}</button>
@@ -449,111 +397,6 @@ function FileList({ title, items, onAdd, codeLabel, nameLabel, code, name, extra
     </div>)}
     {!items.length && <Empty text={`لا توجد ${title} بعد. اضغط + لإضافة أول عنصر.`} />}
   </section>;
-}
-
-/* ───────────── Customer portal ───────────── */
-function ConfigLink({ link, onClose }: { link: string; onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => { try { await navigator.clipboard.writeText(link); setCopied(true); window.setTimeout(() => setCopied(false), 1800); } catch { } };
-  return <div className="config-link">
-    <div className="config-link-head"><b>رابط الكونفيج</b><button className="icon-btn" onClick={onClose} aria-label="إخفاء الرابط"><X size={16} /></button></div>
-    <code dir="ltr">{link}</code>
-    <button className="btn btn-signal" onClick={copy}>{copied ? <><Check size={15} /> تم النسخ</> : <><Copy size={15} /> نسخ الرابط</>}</button>
-  </div>;
-}
-function CustomerPortal({ user, onLogout }: { user: User; onLogout: () => void }) {
-  const [cats, setCats] = useState<any[]>([]); const [services, setServices] = useState<any[]>([]); const [orders, setOrders] = useState<any[]>([]);
-  const [landlines, setLandlines] = useState<any[]>([]); const [selectedLandline, setSelectedLandline] = useState('');
-  const [landlineNumber, setLandlineNumber] = useState(''); const [landlineLabel, setLandlineLabel] = useState('');
-  const [quotaByPlan, setQuotaByPlan] = useState<Record<string, string>>({}); const [msg, setMsg] = useState(''); const [link, setLink] = useState('');
-  const load = () => {
-    api('/api/v1/customer/catalog/categories').then(setCats).catch(() => { });
-    api('/api/v1/customer/services').then(setServices).catch(() => { });
-    api('/api/v1/customer/orders').then(setOrders).catch(() => { });
-    api('/api/v1/customer/landlines').then((x: any[]) => { setLandlines(x); if (!selectedLandline && x[0]?.id) setSelectedLandline(x[0].id); }).catch(() => { });
-  };
-  const addLandline = async (e: FormEvent) => { e.preventDefault(); try { await api('/api/v1/customer/landlines', { method: 'POST', body: JSON.stringify({ number: landlineNumber, label: landlineLabel }) }); setLandlineNumber(''); setLandlineLabel(''); setMsg('تمت إضافة الرقم الأرضي.'); load(); } catch (e: any) { setMsg(e.message); } };
-  const removeLandline = async (id: string) => { if (!confirm('حذف الرقم؟')) return; try { await api('/api/v1/customer/landlines/' + id, { method: 'DELETE' }); if (selectedLandline === id) setSelectedLandline(''); load(); } catch (e: any) { setMsg(e.message); } };
-  useEffect(() => { void load(); }, []);
-  const quotaFor = (p: any) => quotaByPlan[p.id] || Math.round(Number(p.quotaBytes || 0) / 1073741824) || p.minQuotaGb || 1;
-  const order = async (plan: any) => {
-    if (!selectedLandline) { setMsg('اختر رقمًا أرضيًا أولًا.'); return; }
-    const quotaGb = plan.quotaPricingMode === 'PER_GB' ? Number(quotaByPlan[plan.id] || Math.round(Number(plan.quotaBytes || 0) / 1073741824) || plan.minQuotaGb) : undefined;
-    try {
-      const key = crypto.randomUUID();
-      const o = await api('/api/v1/customer/orders', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ items: [{ type: 'CONFIG_NEW', planId: plan.id, landlineId: selectedLandline, quotaGb }] }) });
-      await api(`/api/v1/customer/orders/${o.id}/pay`, { method: 'POST', body: JSON.stringify({}) });
-      setMsg(`تم إنشاء الطلب ${o.public_code}. سيتم تفعيله بعد تأكيد الإدارة للدفع.`); load();
-    } catch (e: any) { setMsg(e.message); }
-  };
-  const reveal = async (id: string) => { try { const x = await api(`/api/v1/customer/services/${id}/config`); setLink(x.link); } catch (e: any) { setMsg(e.message); } };
-  const plans = cats.flatMap((c: any) => (c.plans || []).map((p: any) => ({ ...p, categoryName: c.name })));
-  return <div className="portal">
-    <header className="portal-top">
-      <div className="portal-brand"><Logo size={38} /><b>CowboyBepob</b></div>
-      <div className="portal-user"><span>{user.fullName}</span><button className="btn btn-ghost" onClick={onLogout}><LogOut size={15} /> خروج</button></div>
-    </header>
-    <section className="portal-hero">
-      <img src="/bebop/mars.webp" alt="" />
-      <div className="scene-bars" aria-hidden><span /><span /><span /></div>
-      <div className="portal-hero-text">
-        <h1>أهلًا، {user.fullName.split(' ')[0]}</h1>
-        <p>اختر باقة، اربطها برقمك الأرضي، وتابع خدماتك من هنا.</p>
-      </div>
-    </section>
-    <div className="portal-body">
-      {msg && <div className="alert" role="status">{msg}<button className="icon-btn" onClick={() => setMsg('')} aria-label="إغلاق"><X size={14} /></button></div>}
-      {link && <ConfigLink link={link} onClose={() => setLink('')} />}
-
-      <Panel title="خدماتي" sub={services.length ? `${services.length.toLocaleString('ar-EG')} خدمة` : undefined}>
-        <div className="ship-grid">{services.map(s => <article className="ship" key={s.id}>
-          <div className="ship-img"><img src={s.router_code ? '/bebop/router-708.webp' : '/bebop/gate-idle.webp'} alt="" /><Status v={s.status} /></div>
-          <div className="ship-body">
-            <span className="code-tag">{s.public_code}</span>
-            <h3>{s.label || s.category_name}</h3>
-            <dl>
-              <div><dt>الراوتر</dt><dd>{s.router_code || 'غير مربوط'}</dd></div>
-              <div><dt>الكونفيج</dt><dd>{s.config_code || '—'}</dd></div>
-              <div><dt>ينتهي</dt><dd>{date(s.current_period_end)}</dd></div>
-            </dl>
-            {s.status === 'ACTIVE' && <button className="btn btn-ghost btn-full" onClick={() => reveal(s.id)}>عرض الرابط</button>}
-          </div>
-        </article>)}{!services.length && <Empty text="لا توجد خدمات بعد. اختر باقة من الأسفل لتبدأ." />}</div>
-      </Panel>
-
-      <Panel title="أرقامي الأرضية" sub="كل كونفيج جديد يُربط برقم أرضي.">
-        <form className="landline-form" onSubmit={addLandline}>
-          <label className="field"><span>الرقم</span><input value={landlineNumber} onChange={e => setLandlineNumber(e.target.value)} placeholder="0225551111" inputMode="tel" dir="ltr" required /></label>
-          <label className="field"><span>اسم اختياري</span><input value={landlineLabel} onChange={e => setLandlineLabel(e.target.value)} placeholder="البيت" /></label>
-          <button className="btn btn-signal">إضافة رقم</button>
-        </form>
-        <div className="landlines">{landlines.map((l: any) => <label key={l.id} className={`landline ${selectedLandline === l.id ? 'on' : ''}`}>
-          <input type="radio" name="landline" checked={selectedLandline === l.id} onChange={() => setSelectedLandline(l.id)} />
-          <b dir="ltr">{l.number}</b><span>{l.label || ''}</span>
-          <button type="button" className="icon-btn danger" onClick={() => removeLandline(l.id)} aria-label={`حذف ${l.number}`}><Trash2 size={14} /></button>
-        </label>)}{!landlines.length && <p className="muted">أضف رقمك الأرضي أولًا لتتمكن من الطلب.</p>}</div>
-      </Panel>
-
-      <Panel title="الباقات المتاحة" sub={selectedLandline ? 'الطلب سيُربط بالرقم المحدد أعلاه.' : 'حدد رقمًا أرضيًا لتفعيل الطلب.'}>
-        <div className="passes">{plans.map((p: any) => <article className="pass" key={p.id}>
-          <div className="pass-main">
-            <span className="pass-cat">{p.categoryName}</span>
-            <h3>{p.name}</h3>
-            <div className="pass-meta"><span>{p.durationDays} يوم</span><span>{p.quotaPricingMode === 'PER_GB' ? `${money(p.quotaPricePerGbMinor, p.currency)} لكل GB` : p.quotaBytes ? `${Math.round(Number(p.quotaBytes) / 1073741824)} GB` : 'بدون حصة محددة'}</span></div>
-            {p.quotaPricingMode === 'PER_GB' && <label className="field"><span>حجم الاشتراك بالـGB</span><input type="number" min={p.minQuotaGb || 1} max={p.maxQuotaGb || undefined} step={p.quotaStepGb || 1} value={quotaFor(p)} onChange={e => setQuotaByPlan({ ...quotaByPlan, [p.id]: e.target.value })} /></label>}
-          </div>
-          <div className="pass-stub">
-            <strong>{p.quotaPricingMode === 'PER_GB' ? money(Number(quotaFor(p)) * Number(p.quotaPricePerGbMinor || 0), p.currency) : money(p.priceMinor, p.currency)}</strong>
-            <button className="btn btn-signal btn-full" disabled={!selectedLandline} onClick={() => order(p)}>اطلب الآن</button>
-          </div>
-        </article>)}{!plans.length && <Empty text="لا توجد باقات متاحة حاليًا. عُد لاحقًا." />}</div>
-      </Panel>
-
-      <Panel title="طلباتي">
-        <div className="orders">{orders.map(o => <div className="order-row" key={o.id}><span className="code-tag">{o.public_code}</span><Status v={o.status} /><b className="num">{money(o.total_minor, o.currency)}</b></div>)}{!orders.length && <p className="muted">لم تطلب شيئًا بعد.</p>}</div>
-      </Panel>
-    </div>
-  </div>;
 }
 
 /* ───────────── Infra pages ───────────── */
@@ -620,7 +463,12 @@ function App() {
   const land = (u: User) => { setJumping(null); setUser(u); nav(u.type === 'STAFF' ? '/admin' : '/customer'); };
   if (!booted) return <div className="boot"><Logo size={72} /></div>;
   if (jumping) return <GateJump onDone={() => land(jumping)} />;
-  if (!user) return <Routes><Route path="*" element={<Login onLogin={u => setJumping(u)} />} /></Routes>;
+  if (!user) return <Routes>
+    <Route path="/register" element={<RegisterScreen />} />
+    <Route path="/verify-email" element={<VerifyEmailScreen />} />
+    <Route path="/reset-password" element={<ResetPasswordScreen />} />
+    <Route path="*" element={<LoginScreen onLogin={u => setJumping(u)} />} />
+  </Routes>;
   if (user.type === 'CUSTOMER') return <Routes><Route path="*" element={<CustomerPortal user={user} onLogout={logout} />} /></Routes>;
   return <Shell user={user} onLogout={logout}><Routes>
     <Route path="/admin" element={<Dashboard />} />
