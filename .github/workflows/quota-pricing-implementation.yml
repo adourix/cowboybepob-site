@@ -61,8 +61,13 @@ jobs:
           PY
       - name: Install dependencies
         run: npm install --include=dev
-      - name: Build
-        run: npm run build
+      - name: Build with compact error output
+        run: |
+          set +e
+          npm run build > build.log 2>&1
+          status=$?
+          grep -E "error TS|src/" build.log | head -120 || true
+          exit "$status"
       - name: Commit final implementation
         run: |
           git config user.name "github-actions[bot]"
