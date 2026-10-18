@@ -22,6 +22,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
           p=Path('scripts/apply_quota_pricing.py')
           s=p.read_text()
           old="customer.post('/orders/:id/pay'''"
@@ -32,6 +33,7 @@ jobs:
           s=s.replace('minGb<=0','minGb!<=0')
           s=s.replace('minGb*1024*1024*1024','minGb!*1024*1024*1024')
           s=s.replace(' required={false}','')
+          s=re.sub(r"\ntpath = Path\('apps/web/src/admin-tools.tsx'\).*?tpath.write_text\(t\)\n", "\n", s, flags=re.S)
           p.write_text(s)
           PY
       - name: Apply implementation
@@ -44,7 +46,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add db/schema.sql db/migrations/20261018_variable_quota_pricing.sql apps/api/src/main.ts apps/api/src/worker.ts apps/web/src/app.tsx apps/web/src/admin-tools.tsx
+          git add db/schema.sql db/migrations/20261018_variable_quota_pricing.sql apps/api/src/main.ts apps/api/src/worker.ts apps/web/src/app.tsx
           git commit -m "feat: add customer-selectable quota pricing"
           git push
           git rm .github/workflows/quota-pricing-implementation.yml .github/workflows/finalize-quota-pricing.yml scripts/apply_quota_pricing.py
