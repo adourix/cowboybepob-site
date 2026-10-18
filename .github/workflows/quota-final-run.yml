@@ -18,6 +18,23 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Prepare quota implementation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          script=Path('scripts/finalize_quota_pricing_v2.py')
+          s=script.read_text()
+          s=re.sub(r"\nsub_once\('apps/api/src/main.ts',r\"json_build_object.*?\n\norder_route=", "\norder_route=", s, flags=re.S)
+          script.write_text(s)
+          p=Path('apps/api/src/main.ts')
+          src=p.read_text()
+          pattern=r"customer\.get\('/catalog/categories', async \(\) => \(await db\(`.*?`\)\)\.rows\);"
+          replacement="customer.get('/catalog/categories', async () => (await db(`SELECT c.id,c.name,c.slug,c.description,c.protocol,c.router_compatible,c.link_visibility,json_agg(json_build_object('id',p.id,'name',p.name,'durationDays',p.duration_days,'priceMinor',p.price_minor,'currency',p.currency,'quotaBytes',p.quota_bytes,'quotaPricingMode',p.quota_pricing_mode,'quotaPricePerGbMinor',p.quota_price_per_gb_minor,'minQuotaGb',p.min_quota_gb,'maxQuotaGb',p.max_quota_gb,'quotaStepGb',p.quota_step_gb) ORDER BY p.duration_days) FILTER(WHERE p.id IS NOT NULL) plans FROM config_categories c LEFT JOIN config_plans p ON p.category_id=c.id AND p.status='ACTIVE' WHERE c.status='ACTIVE' GROUP BY c.id ORDER BY c.display_order,c.name`)).rows);"
+          src,n=re.subn(pattern,replacement,src,count=1,flags=re.S)
+          if n!=1: raise SystemExit('customer catalog route not found')
+          p.write_text(src)
+          PY
       - name: Apply quota implementation
         run: python3 scripts/finalize_quota_pricing_v2.py
       - name: Install dependencies
