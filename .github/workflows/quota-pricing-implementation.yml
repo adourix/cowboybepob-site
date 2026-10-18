@@ -51,6 +51,14 @@ jobs:
           PY
       - name: Apply implementation
         run: python3 scripts/finalize_quota_pricing_v2.py
+      - name: Normalize generated router route
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('apps/api/src/main.ts')
+          s=p.read_text().replace("admin.post('/catalog/router-products,","admin.post('/catalog/router-products',")
+          p.write_text(s)
+          PY
       - name: Install dependencies
         run: npm install --include=dev
       - name: Build
