@@ -66,7 +66,9 @@ function decryptSecret(value: Buffer) {
 function db<T extends QueryResultRow = any>(text: string, values: any[] = []) { return pool.query<T>(text, values); }
 function requireCsrf(req: Req) {
   const token = req.headers['x-csrf-token'];
-  if (!req.csrf || typeof token !== 'string' || token !== req.csrf) throw Object.assign(new Error('CSRF validation failed'), { statusCode: 403 });
+  if (!req.csrf || typeof token !== 'string' || !crypto.timingSafeEqual(sha(token), Buffer.from(req.csrf, 'hex'))) {
+    throw Object.assign(new Error('CSRF validation failed'), { statusCode: 403 });
+  }
 }
 function requirePermission(req: Req, permission: string) {
   if (!req.principal || req.principal.type !== 'STAFF') throw Object.assign(new Error('Authentication required'), { statusCode: 401 });
