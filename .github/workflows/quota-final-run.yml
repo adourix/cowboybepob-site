@@ -19,7 +19,7 @@ jobs:
           node-version: 22
           cache: npm
       - name: Apply quota implementation
-        run: python3 scripts/finalize_quota_pricing.py
+        run: python3 scripts/finalize_quota_pricing_v2.py
       - name: Install dependencies
         run: npm install --include=dev
       - name: Build
@@ -31,6 +31,6 @@ jobs:
           git add db/schema.sql db/migrations/20261018_variable_quota_pricing.sql apps/api/src/main.ts apps/api/src/worker.ts apps/web/src/app.tsx
           git commit -m "feat: add customer-selectable quota pricing"
           git push
-          git rm .github/workflows/quota-final-run.yml .github/workflows/quota-pricing-implementation.yml .github/workflows/finalize-quota-pricing.yml scripts/finalize_quota_pricing.py scripts/apply_quota_pricing.py
+          git rm .github/workflows/quota-final-run.yml .github/workflows/quota-pricing-implementation.yml .github/workflows/finalize-quota-pricing.yml scripts/finalize_quota_pricing.py scripts/finalize_quota_pricing_v2.py scripts/apply_quota_pricing.py
           git commit -m "chore: remove temporary quota pricing workflows"
           git push
