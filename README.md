@@ -218,4 +218,4 @@ npm run dev -w @cowboybepob/web
 - لا تستخدم `sudo -u cowboybepob`؛ لا يوجد service user منفصل في هذا التصميم.
 - لا تحذف إعدادات Nginx الموجودة على السيرفر.
 
-<!-- final quota pricing workflow trigger v12 -->
+<!-- final quota pricing workflow trigger v13 -->
