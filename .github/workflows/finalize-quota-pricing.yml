@@ -31,6 +31,7 @@ jobs:
           s=s.replace('maxGb<minGb','maxGb<minGb!')
           s=s.replace('minGb<=0','minGb!<=0')
           s=s.replace('minGb*1024*1024*1024','minGb!*1024*1024*1024')
+          s=s.replace(' required={false}','')
           p.write_text(s)
           PY
       - name: Apply implementation
