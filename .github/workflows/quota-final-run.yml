@@ -27,6 +27,7 @@ jobs:
           s=script.read_text()
           s=re.sub(r"\nsub_once\('apps/api/src/main.ts',r\"json_build_object.*?\n\norder_route=", "\norder_route=", s, flags=re.S)
           s=re.sub(r"\norder_route=.*?\nsub_once\('apps/api/src/main.ts',r\"  customer\\.post.*?\n\nw=Path", "\n\nw=Path", s, flags=re.S)
+          s=s.replace(',1,re.S)', ',re.S)')
           script.write_text(s)
           p=Path('apps/api/src/main.ts'); src=p.read_text()
           pattern=r"customer\.get\('/catalog/categories', async \(\) => \(await db\(`.*?`\)\)\.rows\);"
