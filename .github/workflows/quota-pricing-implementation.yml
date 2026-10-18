@@ -51,12 +51,17 @@ jobs:
           PY
       - name: Apply implementation
         run: python3 scripts/finalize_quota_pricing_v2.py
-      - name: Normalize generated router route
+      - name: Normalize generated files
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p=Path('apps/api/src/main.ts')
           s=p.read_text().replace("admin.post('/catalog/router-products,","admin.post('/catalog/router-products',")
+          p.write_text(s)
+          p=Path('apps/api/src/worker.ts')
+          s=p.read_text()
+          dup="const selectedQuotaBytes=item.quota_bytes==null?p.quota_bytes:item.quota_bytes;const selectedQuotaBytes=item.quota_bytes==null?p.quota_bytes:item.quota_bytes;"
+          s=s.replace(dup,"const selectedQuotaBytes=item.quota_bytes==null?p.quota_bytes:item.quota_bytes;",1)
           p.write_text(s)
           PY
       - name: Install dependencies
