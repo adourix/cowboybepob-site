@@ -25,7 +25,6 @@ jobs:
           import re
           script=Path('scripts/finalize_quota_pricing_v2.py')
           s=script.read_text()
-          # The live schema already contains the new quota columns/migration; do not add them again.
           s=re.sub(r"\nreplace_once\('db/schema.sql'.*?\n\nsub_once\('apps/api/src/main.ts'", "\nsub_once('apps/api/src/main.ts'", s, flags=re.S)
           s=re.sub(r"\nsub_once\('apps/api/src/main.ts',r\"json_build_object.*?\n\norder_route=", "\norder_route=", s, flags=re.S)
           s=re.sub(r"\norder_route=.*?\nsub_once\('apps/api/src/main.ts',r\"  customer\\.post.*?\n\nw=Path", "\n\nw=Path", s, flags=re.S)
@@ -52,6 +51,14 @@ jobs:
           PY
       - name: Apply implementation
         run: python3 scripts/finalize_quota_pricing_v2.py
+      - name: Normalize generated router route
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('apps/api/src/main.ts')
+          s=p.read_text().replace("admin.post('/catalog/router-products,","admin.post('/catalog/router-products',")
+          p.write_text(s)
+          PY
       - name: Install dependencies
         run: npm install --include=dev
       - name: Build
