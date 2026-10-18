@@ -1,0 +1,47 @@
+name: Finalize quota pricing implementation
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Fix implementation script
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/apply_quota_pricing.py')
+          s=p.read_text()
+          old="customer.post('/orders/:id/pay'''"
+          if old not in s:
+              raise SystemExit('Expected malformed order-route suffix was not found')
+          p.write_text(s.replace(old,"'''",1))
+          PY
+      - name: Apply implementation
+        run: python3 scripts/apply_quota_pricing.py
+      - name: Install dependencies
+        run: npm install --include=dev
+      - name: Build
+        run: npm run build
+      - name: Commit final implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add db/schema.sql db/migrations/20261018_variable_quota_pricing.sql apps/api/src/main.ts apps/api/src/worker.ts apps/web/src/app.tsx apps/web/src/admin-tools.tsx
+          git commit -m "feat: add customer-selectable quota pricing"
+          git push
+          git rm .github/workflows/quota-pricing-implementation.yml .github/workflows/finalize-quota-pricing.yml scripts/apply_quota_pricing.py
+          git commit -m "chore: remove quota pricing implementation workflows"
+          git push
