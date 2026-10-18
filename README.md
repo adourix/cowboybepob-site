@@ -217,3 +217,5 @@ npm run dev -w @cowboybepob/web
 - `sudo` يستخدم فقط لأوامر النظام مثل systemd وNginx وPostgreSQL.
 - لا تستخدم `sudo -u cowboybepob`؛ لا يوجد service user منفصل في هذا التصميم.
 - لا تحذف إعدادات Nginx الموجودة على السيرفر.
+
+<!-- final quota pricing workflow trigger -->
