@@ -41,6 +41,7 @@ jobs:
           src=src.replace("price:Number(p.rows[0].price_minor)","price,quotaBytes,quotaGb",1)
           src=src.replace("INSERT INTO order_items(order_id,item_type,router_product_id,plan_id,landline_id,use_with_router,name_snapshot,unit_price_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8)","INSERT INTO order_items(order_id,item_type,router_product_id,plan_id,landline_id,use_with_router,name_snapshot,unit_price_minor,quota_bytes,quota_gb) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",1)
           src=src.replace("[o.rows[0].id,item.type,item.routerProductId||null,item.planId||null,item.landlineId||null,item.useWithRouter||false,item.name,item.price]);","[o.rows[0].id,item.type,item.routerProductId||null,item.planId||null,item.landlineId||null,item.useWithRouter||false,item.name,item.price,item.quotaBytes||null,item.quotaGb||null]);",1)
+          src=src.replace("admin.post('/catalog/router-products,","admin.post('/catalog/router-products',",1)
           p.write_text(src)
           PY
       - name: Apply implementation
