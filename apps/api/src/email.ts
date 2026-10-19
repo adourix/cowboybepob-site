@@ -60,7 +60,6 @@ function emailLayout(options: {
     <tr>
       <td align="center" style="padding:28px 12px 30px;">
         <table role="presentation" width="680" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:680px;margin:0 auto;background:#080b0e;border:1px solid ${options.accentSoft};box-shadow:0 0 0 1px rgba(255,255,255,.015) inset;">
-
           <tr>
             <td style="padding:0;background:#080b0e;">
               <div style="position:relative;background:#111;">
@@ -196,7 +195,7 @@ export async function sendPasswordResetEmail(to: string, name: string, token: st
     titleAccent: 'كلمة المرور',
     intro: 'لقد تلقينا طلبًا لإعادة تعيين كلمة المرور الخاصة بحسابك. اضغط على الزر أدناه لإنشاء كلمة مرور جديدة.',
     buttonLabel: 'إعادة تعيين كلمة المرور',
-    buttonIcon: '♙',
+    buttonIcon: '&#128274;',
     buttonUrl: link,
     note: 'إذا لم تطلب تغيير كلمة المرور، يمكنك تجاهل هذه الرسالة بأمان.',
     note2: 'رابط إعادة التعيين صالح لفترة محدودة من الوقت.',
