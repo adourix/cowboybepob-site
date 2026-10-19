@@ -41,6 +41,7 @@ function emailLayout(options: {
 }) {
   const safeName = escapeHtml(options.name);
   const safeButtonUrl = escapeHtml(options.buttonUrl);
+  const safeTopRight = escapeHtml(options.topRight).replace(/\n/g, '<br>');
   const heroUrl = `${publicUrl}${options.hero}`;
 
   return `<!doctype html>
@@ -60,13 +61,10 @@ function emailLayout(options: {
       <td align="center" style="padding:28px 12px 30px;">
         <table role="presentation" width="680" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:680px;margin:0 auto;background:#080b0e;border:1px solid ${options.accentSoft};box-shadow:0 0 0 1px rgba(255,255,255,.015) inset;">
 
-          <!-- HERO -->
           <tr>
             <td style="padding:0;background:#080b0e;">
               <div style="position:relative;background:#111;">
                 <img src="${heroUrl}" width="680" alt="CowboyBepob" style="display:block;width:100%;height:390px;object-fit:cover;border:0;outline:none;text-decoration:none;">
-
-                <!-- top branding overlay -->
                 <div style="position:absolute;left:34px;right:34px;top:25px;">
                   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                     <tr>
@@ -80,7 +78,7 @@ function emailLayout(options: {
                       </td>
                       <td align="right" valign="top" style="padding:4px 0 0 18px;min-width:155px;">
                         <div style="font-size:11px;line-height:1.55;letter-spacing:3px;color:#eee6dc;text-transform:uppercase;text-align:left;">
-                          ${escapeHtml(options.topRight)}
+                          ${safeTopRight}
                         </div>
                       </td>
                     </tr>
@@ -90,15 +88,12 @@ function emailLayout(options: {
             </td>
           </tr>
 
-          <!-- OVERLAPPING CONTENT CARD -->
           <tr>
             <td align="center" style="padding:0 18px;background:transparent;">
               <div style="margin:-72px 0 0;position:relative;z-index:2;background:linear-gradient(180deg,#090d10 0%,#080b0e 100%);border:1px solid ${options.accentSoft};border-radius:25px;padding:38px 42px 30px;box-shadow:0 18px 42px rgba(0,0,0,.42);">
                 <div style="font-family:Arial,Helvetica,sans-serif;font-size:34px;line-height:1.35;font-weight:800;color:#f5efe7;margin:0 0 22px;text-align:center;">
                   ${escapeHtml(options.title)} <span style="color:${options.accent};">${escapeHtml(options.titleAccent)}</span>
                 </div>
-
-                <div style="height:1px;width:100%;background:rgba(255,255,255,.08);margin:0 0 22px;display:none;">&nbsp;</div>
 
                 <p style="margin:0 0 8px;font-family:Georgia,'Times New Roman',serif;font-size:20px;line-height:1.7;color:#eee5da;text-align:center;">
                   مرحبًا بك في <span style="font-weight:700;color:#f4eee5;">Cowboy<span style="color:${options.accent};">Bepob</span></span>
@@ -107,7 +102,6 @@ function emailLayout(options: {
                   ${options.intro}
                 </p>
 
-                <!-- CTA -->
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto 28px;">
                   <tr>
                     <td align="center" style="background:${options.accent};border-radius:9px;box-shadow:0 8px 24px ${options.accent}35;">
@@ -120,7 +114,6 @@ function emailLayout(options: {
                   </tr>
                 </table>
 
-                <!-- NOTE -->
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid rgba(255,255,255,.09);">
                   <tr>
                     <td align="right" style="padding:17px 0 0;">
@@ -142,7 +135,6 @@ function emailLayout(options: {
             </td>
           </tr>
 
-          <!-- FOOTER -->
           <tr>
             <td style="padding:28px 42px 30px;background:#080b0e;border-top:1px solid rgba(255,255,255,.08);">
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
