@@ -40,7 +40,6 @@ function emailLayout(options: {
   footerTagline: string;
   preheader: string;
 }) {
-  const safeName = escapeHtml(options.name);
   const safeButtonUrl = escapeHtml(options.buttonUrl);
   const safeTopRight = escapeHtml(options.topRight).replace(/\n/g, '<br>');
   const heroUrl = `${publicUrl}${options.hero}`;
@@ -62,7 +61,7 @@ function emailLayout(options: {
       <td align="center" style="padding:34px 12px 32px;">
         <table role="presentation" width="680" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:680px;background:#080b0e;border:1px solid ${options.border};border-collapse:separate;border-spacing:0;">
 
-          <!-- HERO: table/background based so the composition survives email clients better -->
+          <!-- HERO -->
           <tr>
             <td width="680" height="390" valign="top" background="${heroUrl}" style="width:680px;height:390px;background-color:#17100f;background-image:url('${heroUrl}');background-repeat:no-repeat;background-position:center top;background-size:680px 390px;">
               <!--[if gte mso 9]>
