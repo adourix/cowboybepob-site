@@ -28,7 +28,6 @@ function emailLayout(options: {
   eyebrow: string;
   title: string;
   accent: string;
-  accentDark: string;
   intro: string;
   buttonLabel: string;
   buttonUrl: string;
@@ -62,7 +61,7 @@ function emailLayout(options: {
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td align="right" style="font-family:Arial,Helvetica,sans-serif;">
-                    <div style="font-size:22px;line-height:1;font-weight:900;letter-spacing:2px;color:#f5f1e8;text-transform:uppercase;">COWBOY<span style="color:${options.accent};">BEPOb</span></div>
+                    <div style="font-size:22px;line-height:1;font-weight:900;letter-spacing:2px;color:#f5f1e8;text-transform:uppercase;">COWBOY<span style="color:${options.accent};">BEPOB</span></div>
                     <div style="margin-top:7px;font-size:10px;line-height:1;letter-spacing:3px;color:#777;text-transform:uppercase;">SPACE NETWORK // TRANSMISSION</div>
                   </td>
                   <td align="left" valign="middle" style="width:44px;">
@@ -128,7 +127,6 @@ export async function sendVerificationEmail(to: string, name: string, token: str
     eyebrow: 'Identity verification',
     title: 'تأكيد البريد الإلكتروني',
     accent: '#f04a32',
-    accentDark: '#a82d20',
     intro: 'تم إنشاء حسابك بنجاح. استخدم الزر التالي لتأكيد بريدك الإلكتروني وتفعيل حسابك.',
     buttonLabel: 'تأكيد البريد الإلكتروني',
     buttonUrl: link,
@@ -144,7 +142,6 @@ export async function sendPasswordResetEmail(to: string, name: string, token: st
     eyebrow: 'Security transmission',
     title: 'إعادة تعيين كلمة المرور',
     accent: '#2d8cff',
-    accentDark: '#1a4f99',
     intro: 'تم استلام طلب لإعادة تعيين كلمة المرور الخاصة بحسابك. إذا كان الطلب منك، استخدم الزر التالي للمتابعة.',
     buttonLabel: 'إعادة تعيين كلمة المرور',
     buttonUrl: link,
