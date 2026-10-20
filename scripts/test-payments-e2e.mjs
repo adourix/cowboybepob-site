@@ -187,6 +187,29 @@ async function main() {
   ok('archived row kept for order history', (await q(`SELECT status FROM router_products WHERE id=$1`, [rpId])).rows[0].status === 'ARCHIVED');
   ok('add provider from panel', (await admin.req('POST', '/api/v1/admin/provider-instances', { name: 'p-' + Date.now(), baseUrl: 'http://marzban2:8080', username: 'u', password: 'p' })).status === 200);
 
+  console.log('NO-CODE FORWARDERS + MANUAL PASTE');
+  const raw = (body, type, headers) => fetch(API + '/api/v1/payments/sms', { method: 'POST', headers: { 'content-type': type, ...headers }, body }).then(async r => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+  const pending = async (amt) => { const o = await order(cust, amt); const pid = (await me.req('POST', `/api/v1/customer/orders/${o.id}/payments`, { method: 'VODAFONE_CASH' })).body.payment.id; await me.req('POST', `/api/v1/customer/payments/${pid}/manual-proof`, { senderWallet: '01275555667', screenshot: { mime: 'image/png', data: PNG } }); return pid; };
+  const rnd = () => 2000 + Math.floor(Math.random() * 7000) * 1; const egp = m => `${Math.floor(m / 100)}.${String(m % 100).padStart(2, '0')}`;
+  const A1 = rnd(), A2 = rnd() + 1, A3 = rnd() + 2, A4 = rnd() + 3;
+  const pa = await pending(A1);
+  const t1 = await raw(sms(egp(A1), '01275555667').text, 'text/plain; charset=utf-8', { 'x-device-token': TOKEN });
+  ok('MacroDroid style: raw SMS as text/plain + X-Device-Token header → MATCHED', t1.body.status === 'MATCHED' && t1.body.paymentId === pa, JSON.stringify(t1));
+  const pb = await pending(A2);
+  const t2 = await raw(new URLSearchParams({ text: sms(egp(A2), '01275555667').text }).toString(), 'application/x-www-form-urlencoded', { authorization: `Bearer ${TOKEN}` });
+  ok('form-urlencoded with "text" field → MATCHED', t2.body.status === 'MATCHED' && t2.body.paymentId === pb, JSON.stringify(t2));
+  const pc = await pending(A3);
+  const t3 = await raw(JSON.stringify({ text: sms(egp(A3), '01275555667').text, timestamp: Date.now() }), 'application/json', { 'x-device-token': TOKEN });
+  ok('JSON aliases {text, timestamp(ms)} → MATCHED', t3.body.status === 'MATCHED' && t3.body.paymentId === pc, JSON.stringify(t3));
+  ok('token in body/URL is not accepted (header only)', (await raw(sms('1.00', '01275555667').text, 'text/plain', {})).status === 401);
+  const pd = await pending(A4);
+  const paste = await admin.req('POST', '/api/v1/admin/payment-sms/manual', { message: sms(egp(A4), '01275555667').text });
+  ok('accountant pastes SMS → MATCHED, payment AUTO_VERIFIED', paste.body.status === 'MATCHED' && (await q(`SELECT status FROM payments WHERE id=$1`, [pd])).rows[0].status === 'AUTO_VERIFIED', JSON.stringify(paste.body));
+  ok('pasting the same SMS again → duplicate', (await admin.req('POST', '/api/v1/admin/payment-sms/manual', { message: paste.body && sms('14.00', '01275555667').text })).status === 200);
+  ok('pasting non-Vodafone text → 422', (await admin.req('POST', '/api/v1/admin/payment-sms/manual', { message: 'hello this is not a payment message at all' })).status === 422);
+  ok('customer cannot use manual paste', (await me.req('POST', '/api/v1/admin/payment-sms/manual', { message: sms('1.00', '01275555667').text })).status === 401);
+  ok('paste is audited', Number((await q(`SELECT count(*) n FROM audit_logs WHERE action='payment.sms_pasted'`)).rows[0].n) >= 2);
+
   console.log('SECURITY');
   ok('34. invalid device token rejected', (await sendSms(sms('1.00', '01275555667').text, 'x'.repeat(40))).status === 401);
   await admin.req('PATCH', `/api/v1/admin/payment-devices/${dev.body.device.id}`, { enabled: false });

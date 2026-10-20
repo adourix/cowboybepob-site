@@ -30,7 +30,27 @@ AWAITING_TRANSFER ─(window passed)→ EXPIRED
 * SMS that arrive before the customer submits the form are kept `UNMATCHED` and matched when the form arrives.
 * Unrelated SMS are refused without being stored. Unparseable Vodafone SMS are stored as `MANUAL_REVIEW`.
 
-### Android device (SMS forwarder)
+### No phone forwarder yet? Paste the SMS
+
+Admin → المدفوعات → «رسائل غير مطابقة» → paste the full «تم استلام مبلغ …» text → «فحص ومطابقة».
+It runs the same parser, matcher and duplicate checks as an automatic forwarder, and is audited.
+The payment detail panel also has a paste box while a payment waits for its SMS.
+
+### Free no-code forwarder: MacroDroid (recommended)
+
+On the phone that holds the receiving wallet:
+
+1. Admin → المدفوعات → أجهزة الرسائل → add a device, copy the token (shown once).
+2. Install **MacroDroid** (Google Play, free for up to 5 macros). Allow SMS permission.
+3. New macro → Trigger **SMS Received** → content contains `تم استلام مبلغ`.
+4. Action **HTTP Request** → `POST` `https://cowboybebop.site/api/v1/payments/sms`
+5. Header `X-Device-Token: <token>`
+6. Body content type `text/plain`, body `[sms_message]` (the raw SMS — no JSON to escape).
+7. Send yourself a small transfer; it should appear under «رسائل غير مطابقة» or match a payment.
+
+MacroDroid does not retry when offline — paste any missed SMS manually. Duplicates are always safe.
+
+### Android device (SMS forwarder) — protocol
 
 1. Admin → المدفوعات → أجهزة الرسائل → add a device (e.g. `android-wallet-01`). Copy the token (shown once).
 2. On the phone that holds the receiving wallet, run an SMS forwarder that does:
@@ -42,6 +62,9 @@ Content-Type: application/json
 
 { "deviceId": "android-wallet-01", "message": "<full SMS text>", "receivedAt": "2026-10-16T18:47:00+03:00" }
 ```
+
+Also accepted: the raw SMS as `text/plain`, form-urlencoded, field aliases `text|body|sms`, `timestamp` (ms),
+and the token as `X-Device-Token` instead of `Authorization: Bearer`. Never put the token in the URL.
 
 Responses: `{accepted:true,status:"MATCHED"|"UNMATCHED"|"DUPLICATE"|"MANUAL_REVIEW"}`, `{duplicate:true}`,
 `{ignored:true}` (not a Vodafone Cash receipt). `401` bad token, `403` device disabled. Rate limit 60/min.

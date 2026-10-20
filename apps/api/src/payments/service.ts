@@ -183,7 +183,7 @@ export async function authenticateDevice(pool: Pool, token: string | undefined, 
   const d = (await pool.query('SELECT * FROM payment_devices WHERE device_token_hash=$1', [sha256(token)])).rows[0];
   if (d) {
     if (!d.enabled) throw new PaymentError('Device disabled', 403, 'DEVICE_DISABLED');
-    if (deviceKey && d.device_key !== deviceKey) throw new PaymentError('Unauthorized', 401, 'DEVICE_MISMATCH');
+    if (deviceKey && d.device_key !== deviceKey) throw new PaymentError('Unauthorized', 401, 'DEVICE_MISMATCH'); // optional: the token alone identifies the device
     await pool.query('UPDATE payment_devices SET last_seen_at=now() WHERE id=$1', [d.id]);
     return d;
   }

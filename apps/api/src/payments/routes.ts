@@ -1,16 +1,19 @@
+import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { isPaymentMethod } from './availability.js';
 import { authenticateDevice, confirmPayment, createDevice, createPayment, getCustomerPayment, handleKashierWebhook, ingestSms, paymentOptions, PaymentError, plog, readScreenshot, rejectPayment, submitManualProof } from './service.js';
 
 type Deps = { pool: Pool; requirePermission: (req: any, perm: string) => void; requireCsrf: (req: any) => void };
+/** Per-session rate-limit key: mobile carriers put many customers behind one IP (CGNAT). */
+const bySession = (req: any) => { const m = /(?:^|;\s*)cb_session=([^;]+)/.exec(String(req.headers.cookie || '')); return m ? 's:' + crypto.createHash('sha256').update(m[1]).digest('hex').slice(0, 24) : 'ip:' + req.ip; };
 const isUuid = (v: any) => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 const needUuid = (v: any) => { if (!isUuid(v)) throw new PaymentError('Not found', 404, 'NOT_FOUND'); return v as string; };
 
 /* Customer: method selection, Vodafone proof, status polling, own screenshot. */
 export function registerCustomerPaymentRoutes(customer: FastifyInstance, d: Deps) {
   customer.get('/orders/:id/payment-options', async (req: any) => paymentOptions(d.pool, needUuid(req.params.id), req.principal.id));
-  customer.post('/orders/:id/payments', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req: any) => {
+  customer.post('/orders/:id/payments', { config: { rateLimit: { max: 30, timeWindow: '1 minute', keyGenerator: bySession } } }, async (req: any) => {
     d.requireCsrf(req);
     const method = String(req.body?.method || '').toUpperCase();
     if (!isPaymentMethod(method)) throw new PaymentError('طريقة دفع غير معروفة.', 400, 'BAD_METHOD');
@@ -19,7 +22,7 @@ export function registerCustomerPaymentRoutes(customer: FastifyInstance, d: Deps
   });
   // Backwards compatible: old clients called /pay right after creating an order.
   customer.post('/orders/:id/pay', async (req: any) => { d.requireCsrf(req); return createPayment(d.pool, { orderId: needUuid(req.params.id), customerId: req.principal.id, method: 'VODAFONE_CASH' }); });
-  customer.post('/payments/:id/manual-proof', { bodyLimit: 7 * 1024 * 1024, config: { rateLimit: { max: 6, timeWindow: '10 minutes' } } }, async (req: any) => {
+  customer.post('/payments/:id/manual-proof', { bodyLimit: 7 * 1024 * 1024, config: { rateLimit: { max: 20, timeWindow: '10 minutes', keyGenerator: bySession } } }, async (req: any) => {
     d.requireCsrf(req);
     const b = req.body || {};
     return submitManualProof(d.pool, { paymentId: needUuid(req.params.id), customerId: req.principal.id, senderWallet: String(b.senderWallet || ''), screenshot: b.screenshot?.data ? { base64: String(b.screenshot.data), mime: String(b.screenshot.mime || '') } : undefined });
@@ -70,6 +73,18 @@ export function registerAdminPaymentRoutes(admin: FastifyInstance, d: Deps) {
     d.requirePermission(req, 'payments:read');
     return (await d.pool.query(`SELECT s.id,s.parse_status,s.parse_error,s.parsed_amount_minor,s.parsed_sender_wallet,s.parsed_receiver_wallet,s.parsed_transaction_reference,s.parsed_transaction_time,s.match_status,s.match_details,s.received_at,dv.name device_name FROM payment_sms s LEFT JOIN payment_devices dv ON dv.id=s.device_id WHERE s.payment_id IS NULL ORDER BY s.created_at DESC LIMIT 200`)).rows;
   });
+  // No phone? The accountant pastes the Vodafone Cash SMS; same parser, matcher and duplicate checks.
+  admin.post('/payment-sms/manual', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req: any) => {
+    d.requirePermission(req, 'payments:write'); d.requireCsrf(req);
+    const message = String(req.body?.message || '').trim();
+    if (!message) throw new PaymentError('الصق نص رسالة فودافون كاش.', 400, 'BAD_MESSAGE');
+    const dev = (await d.pool.query(`INSERT INTO payment_devices(device_key,name,device_token_hash) VALUES('manual-paste','لصق يدوي من لوحة الإدارة',$1) ON CONFLICT(device_key) DO UPDATE SET last_seen_at=now() RETURNING id,enabled`, [crypto.randomBytes(32)])).rows[0];
+    const r: any = await ingestSms(d.pool, { deviceId: dev.id, message, receivedAt: new Date().toISOString() });
+    if (r.ignored) throw new PaymentError('هذا النص لا يبدو رسالة استلام من فودافون كاش.', 422, 'NOT_VODAFONE_CASH');
+    plog('SMS_MANUAL_PASTE', { staffId: req.principal.id, status: r.status || (r.duplicate ? 'DUPLICATE' : '') });
+    await d.pool.query(`INSERT INTO audit_logs(actor_type,actor_id,action,entity_type,entity_id,metadata) VALUES('STAFF',$1,'payment.sms_pasted','payments',$2,$3)`, [req.principal.id, r.paymentId || null, { status: r.status || null, reason: r.reason || null, duplicate: Boolean(r.duplicate) }]);
+    return r;
+  });
   admin.get('/payment-devices', async (req: any) => { d.requirePermission(req, 'payments:read'); return (await d.pool.query('SELECT id,device_key,name,enabled,last_seen_at,last_sms_at,created_at FROM payment_devices ORDER BY created_at')).rows; });
   admin.post('/payment-devices', async (req: any) => {
     d.requirePermission(req, 'payments:write'); d.requireCsrf(req);
@@ -86,14 +101,31 @@ export function registerAdminPaymentRoutes(admin: FastifyInstance, d: Deps) {
 }
 
 /* Machine endpoints: Android SMS device + Kashier webhook (no session, own authentication). */
+/**
+ * SMS input is deliberately tolerant so off-the-shelf automation apps (e.g. MacroDroid) work without custom code:
+ *   - body: JSON {deviceId, message|text|body|sms, receivedAt|timestamp}, form-urlencoded, or the raw SMS as text/plain
+ *   - token: `Authorization: Bearer <token>` or `X-Device-Token: <token>` (never in the URL — URLs end up in logs)
+ */
+export function smsInput(req: any) {
+  const raw = req.body;
+  const b: any = typeof raw === 'string' ? { message: raw } : raw && typeof raw === 'object' ? raw : {};
+  const message = [b.message, b.text, b.body, b.sms, b.msg, b.content].find(v => typeof v === 'string' && v.trim());
+  const ts = b.receivedAt ?? b.receivedStamp ?? b.timestamp ?? b.time;
+  const receivedAt = ts == null || ts === '' ? new Date().toISOString() : /^\d{10,13}$/.test(String(ts)) ? new Date(Number(String(ts).padEnd(13, '0'))).toISOString() : String(ts);
+  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') || String(req.headers['x-device-token'] || '') || undefined;
+  return { message: message as string | undefined, receivedAt, token, deviceKey: String(b.deviceId || req.headers['x-device-id'] || '') };
+}
+
 export function registerPublicPaymentRoutes(app: FastifyInstance, d: Deps) {
-  const bearer = (req: any) => String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') || undefined;
-  app.post('/api/v1/payments/sms', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req: any) => {
-    const b = req.body || {};
-    const device = await authenticateDevice(d.pool, bearer(req), String(b.deviceId || ''));
+  const bearer = (req: any) => String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') || String(req.headers['x-device-token'] || '') || undefined;
+  // Form posts from automation apps (JSON and text/plain are parsed by Fastify itself).
+  if (!app.hasContentTypeParser('application/x-www-form-urlencoded')) app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string', bodyLimit: 16384 }, (_req, body, done) => { try { done(null, Object.fromEntries(new URLSearchParams(String(body)))); } catch (e: any) { done(e, undefined); } });
+  app.post('/api/v1/payments/sms', { bodyLimit: 16384, config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req: any) => {
+    const input = smsInput(req);
+    const device = await authenticateDevice(d.pool, input.token, input.deviceKey);
     plog('SMS_RECEIVED', { deviceId: device.id });
-    if (typeof b.message !== 'string' || !b.message.trim()) throw new PaymentError('message is required', 400, 'BAD_MESSAGE');
-    return ingestSms(d.pool, { deviceId: device.id, message: b.message, receivedAt: String(b.receivedAt || new Date().toISOString()) });
+    if (!input.message) throw new PaymentError('message is required', 400, 'BAD_MESSAGE');
+    return ingestSms(d.pool, { deviceId: device.id, message: input.message, receivedAt: input.receivedAt });
   });
   app.post('/api/v1/payments/devices/heartbeat', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req: any) => {
     const device = await authenticateDevice(d.pool, bearer(req), String(req.body?.deviceId || ''));
