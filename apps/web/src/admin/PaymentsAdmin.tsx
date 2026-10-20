@@ -96,7 +96,7 @@ function PaymentDetail({ id, onClose, onChanged }: { id: string; onClose: () => 
 /** No phone forwarder? Paste the Vodafone Cash SMS here — same parser, matcher and duplicate protection. */
 export function PasteSms({ onDone, compact }: { onDone?: () => void; compact?: boolean }) {
   const [text, setText] = useState(''); const [busy, setBusy] = useState(false); const [res, setRes] = useState<{ tone: string; msg: string } | null>(null);
-  const why: Record<string, string> = { AMOUNT_MISMATCH: 'المبلغ لا يطابق أي دفعة مفتوحة', SENDER_MISMATCH: 'رقم المرسل لا يطابق محفظة أي عميل ينتظر', RECEIVER_MISMATCH: 'محفظة الاستلام لا تطابق', RECEIVER_NOT_OURS: 'الرسالة لمحفظة ليست محفظتنا', OUTSIDE_PAYMENT_WINDOW: 'وقت التحويل خارج مهلة الدفع', NO_OPEN_PAYMENTS: 'لا توجد دفعة مفتوحة من هذا الرقم — ستُطابق تلقائيًا عندما يرسل العميل بياناته' };
+  const why: Record<string, string> = { AMOUNT_MISMATCH: 'المبلغ لا يطابق أي دفعة مفتوحة', SENDER_MISMATCH: 'رقم المرسل لا يطابق محفظة أي عميل ينتظر', RECEIVER_MISMATCH: 'محفظة الاستلام لا تطابق', RECEIVER_NOT_OURS: 'الرسالة لمحفظة ليست محفظتنا', OUTSIDE_PAYMENT_WINDOW: 'وقت التحويل خارج مهلة الدفع', NO_OPEN_PAYMENTS: 'لا توجد دفعة مفتوحة من هذا الرقم — ستُطابق تلقائيًا عندما يرسل العميل بياناته', SENDER_NAME_ONLY: 'الرسالة تذكر اسم المرسل فقط بدون رقم — راجع الدفعة يدويًا بالاسم والمبلغ', RECEIVER_UNKNOWN: 'محفظة الاستلام غير مضبوطة: أضف ORANGE_CASH_RECEIVING_WALLET' };
   const send = async () => {
     setBusy(true); setRes(null);
     try {
@@ -117,9 +117,12 @@ export function PasteSms({ onDone, compact }: { onDone?: () => void; compact?: b
 function UnmatchedSms() {
   const [rows, setRows] = useState<any[]>([]); const [err, setErr] = useState('');
   useEffect(() => { void api<any[]>('/api/v1/admin/payment-sms').then(setRows).catch(e => setErr(e.message)); }, []);
-  const reason: Record<string, string> = { AMOUNT_MISMATCH: 'المبلغ لا يطابق', SENDER_MISMATCH: 'المحفظة المرسلة لا تطابق', RECEIVER_MISMATCH: 'محفظة الاستلام لا تطابق', RECEIVER_NOT_OURS: 'ليست محفظتنا', OUTSIDE_PAYMENT_WINDOW: 'خارج مهلة الدفع', NO_OPEN_PAYMENTS: 'لا توجد دفعة مفتوحة لهذا الرقم' };
+  const reason: Record<string, string> = { AMOUNT_MISMATCH: 'المبلغ لا يطابق', SENDER_MISMATCH: 'المحفظة المرسلة لا تطابق', RECEIVER_MISMATCH: 'محفظة الاستلام لا تطابق', RECEIVER_NOT_OURS: 'ليست محفظتنا', OUTSIDE_PAYMENT_WINDOW: 'خارج مهلة الدفع', NO_OPEN_PAYMENTS: 'لا توجد دفعة مفتوحة لهذا الرقم', SENDER_NAME_ONLY: 'المرسل باسمه فقط (بدون رقم) — طابقه يدويًا', RECEIVER_UNKNOWN: 'محفظة الاستلام غير مضبوطة (ORANGE_CASH_RECEIVING_WALLET)' };
   const reload = () => void api<any[]>('/api/v1/admin/payment-sms').then(setRows).catch(e => setErr(e.message));
-  return <section className="panel table-panel"><div className="paste-wrap"><PasteSms onDone={reload} /></div>{err && <div className="alert error">{err}</div>}
+  const [rp, setRp] = useState('');
+  const reprocess = async () => { setRp('…'); try { const r = await api<any>('/api/v1/admin/payment-sms/reprocess-failed', { method: 'POST', body: JSON.stringify({}) }); setRp(`تمت إعادة قراءة ${r.total}: نجحت ${r.parsed}${r.matched ? `، طابقت ${r.matched} دفعة` : ''}${r.stillFailed ? `، ما زالت تفشل ${r.stillFailed}` : ''}`); reload(); } catch (e: any) { setRp(e.message); } };
+  const failedCount = rows.filter(r => r.parse_status === 'FAILED').length;
+  return <section className="panel table-panel"><div className="paste-wrap"><PasteSms onDone={reload} />{failedCount > 0 && <div className="row-actions reprocess"><button className="btn btn-ghost" onClick={reprocess}><RefreshCw size={15} /> إعادة قراءة الرسائل الفاشلة ({failedCount})</button>{rp && <span className="muted">{rp}</span>}</div>}</div>{err && <div className="alert error">{err}</div>}
     <div className="table-wrap"><table><thead><tr><th>الوقت</th><th>المبلغ</th><th>من</th><th>إلى</th><th>المرجع</th><th>النتيجة</th><th>الجهاز</th></tr></thead><tbody>
       {rows.map(s => <tr key={s.id}><td className="muted">{date(s.parsed_transaction_time || s.received_at)}</td><td className="num">{s.parsed_amount_minor != null ? money(s.parsed_amount_minor) : '—'}</td><td dir="ltr" className="mono-ish">{s.parsed_sender_wallet || '—'}</td><td dir="ltr" className="mono-ish">{s.parsed_receiver_wallet || '—'}</td><td dir="ltr" className="mono-ish">{s.parsed_transaction_reference || '—'}</td>
         <td>{s.parse_status === 'FAILED' ? <span className="status bad"><i />تعذرت القراءة ({s.parse_error})</span> : s.match_status === 'DUPLICATE' ? <span className="status idle"><i />مكررة</span> : <span className="status warn"><i />{reason[s.match_details?.reason] || 'غير مطابقة'}</span>}</td><td>{s.device_name}</td></tr>)}

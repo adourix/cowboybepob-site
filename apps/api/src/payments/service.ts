@@ -261,15 +261,33 @@ export async function ingestSms(pool: Pool, input: { deviceId: string; message: 
     }
     const ins = await c.query(`INSERT INTO payment_sms(device_id,raw_message,message_hash,parse_status,parse_error,parsed_amount_minor,parsed_sender_wallet,parsed_sender_name,parsed_receiver_wallet,parsed_transaction_reference,parsed_transaction_time,parsed_balance_minor,match_status,received_at,carrier)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(message_hash) DO NOTHING RETURNING *`,
-      [input.deviceId, message, hash, parsed.ok ? 'PARSED' : 'FAILED', parsed.ok ? null : parsed.reason, parsed.ok ? parsed.amountMinor : null, parsed.ok ? parsed.senderWallet : null, parsed.ok ? parsed.senderName : null, parsed.ok ? parsed.receiverWallet : null, parsed.ok ? parsed.reference : null, parsed.ok ? parsed.occurredAt : null, parsed.ok ? parsed.balanceMinor : null, matchStatus, receivedAt, parsed.ok ? (parsed.carrier || 'VODAFONE') : null]);
-    if (!ins.rowCount) { plog('SMS_DUPLICATE', { deviceId: input.deviceId }); return { accepted: true, duplicate: true }; }
-    const sms = ins.rows[0];
+      [input.deviceId, message, hash, parsed.ok ? 'PARSED' : 'FAILED', parsed.ok ? null : parsed.reason, parsed.ok ? parsed.amountMinor : null, parsed.ok ? parsed.senderWallet : null, parsed.ok ? parsed.senderName : null, parsed.ok ? parsed.receiverWallet : null, parsed.ok ? parsed.reference : null, parsed.ok ? parsed.occurredAt : null, parsed.ok ? parsed.balanceMinor : null, matchStatus, receivedAt, parsed.ok ? (parsed.carrier || null) : null]);
+    let sms = ins.rows[0];
+    if (!ins.rowCount) {
+      // Same SMS seen before. If it previously FAILED to parse and now parses, re-read that same record
+      // (nothing is deleted; this is how failed SMS recover after a parser fix). Otherwise it is a duplicate.
+      const prev = (await c.query(`SELECT * FROM payment_sms WHERE message_hash=$1 FOR UPDATE`, [hash])).rows[0];
+      if (!prev || prev.parse_status !== 'FAILED' || !parsed.ok) { plog('SMS_DUPLICATE', { deviceId: input.deviceId }); return { accepted: true, duplicate: true }; }
+      sms = (await c.query(`UPDATE payment_sms SET parse_status='PARSED',parse_error=NULL,parsed_amount_minor=$2,parsed_sender_wallet=$3,parsed_sender_name=$4,parsed_receiver_wallet=$5,parsed_transaction_reference=$6,parsed_transaction_time=$7,parsed_balance_minor=$8,match_status=$9,carrier=$10,match_details=NULL WHERE id=$1 RETURNING *`,
+        [prev.id, parsed.amountMinor, parsed.senderWallet, parsed.senderName, parsed.receiverWallet, parsed.reference, parsed.occurredAt, parsed.balanceMinor, matchStatus, parsed.carrier || null])).rows[0];
+      plog('SMS_REPROCESSED', { smsId: sms.id, previousError: prev.parse_error });
+    }
     plog(parsed.ok ? 'SMS_PARSED' : 'SMS_PARSE_FAILED', { smsId: sms.id, reason: parsed.ok ? undefined : parsed.reason });
     if (!parsed.ok) return { accepted: true, status: 'MANUAL_REVIEW' };
     if (matchStatus === 'DUPLICATE') { plog('PAYMENT_DUPLICATE_DETECTED', { smsId: sms.id, reference: parsed.reference }); return { accepted: true, status: 'DUPLICATE' }; }
+    if (!parsed.receiverWallet) {
+      // Receipt without a receiving wallet and none configured (set ORANGE_CASH_RECEIVING_WALLET).
+      await c.query(`UPDATE payment_sms SET match_details=$1 WHERE id=$2`, [{ reason: 'RECEIVER_UNKNOWN' }, sms.id]);
+      return { accepted: true, status: 'UNMATCHED', reason: 'RECEIVER_UNKNOWN' };
+    }
     if (cfg.receivingWallets.length && !cfg.receivingWallets.includes(parsed.receiverWallet)) {
       await c.query(`UPDATE payment_sms SET match_details=$1 WHERE id=$2`, [{ reason: 'RECEIVER_NOT_OURS' }, sms.id]);
       return { accepted: true, status: 'UNMATCHED', reason: 'RECEIVER_NOT_OURS' };
+    }
+    if (!parsed.senderWallet) {
+      // Sender shown by name only: never guess a wallet; the accountant matches it by name/amount.
+      await c.query(`UPDATE payment_sms SET match_details=$1 WHERE id=$2`, [{ reason: 'SENDER_NAME_ONLY', senderName: parsed.senderName }, sms.id]);
+      return { accepted: true, status: 'UNMATCHED', reason: 'SENDER_NAME_ONLY' };
     }
     const cands = (await c.query(`SELECT * FROM payments WHERE provider='MANUAL_WALLET' AND status='PENDING_VERIFICATION' AND customer_wallet=$1 ORDER BY created_at FOR UPDATE SKIP LOCKED`, [parsed.senderWallet])).rows;
     const m = matchSms(parsed, cands.map(pendingFromRow), { skewMinutes: cfg.smsClockSkewMinutes });

@@ -262,6 +262,37 @@ async function main() {
   await Rr.cl.req('POST', `/api/v1/customer/payments/${rp2}/manual-proof`, { senderWallet: '01211111111', screenshot: { mime: 'image/png', data: PNG } });
   ok('router order is never activated/shipped on proof', (await prow(rp2)).provisional_activation === false && (await prow(rp2)).ostatus === 'PENDING_PAYMENT');
 
+  console.log('REAL PRODUCTION SMS FORMATS (ingestion)');
+  const RM3 = `تم استلام مبلغ 5005.00 جنيه من Mohamed N Ewedah، رصيدك الحالي 5005.20 جنية، رقم المعاملة ${'25' + String(Date.now()).slice(-12)}.\n\nعرض مايتفوتش!\nادفع دلوقتي باورنچ كاش\nhttps://myo.orange.eg/YANGO`;
+  const rp3 = await raw(RM3, 'text/plain', { 'x-device-token': TOKEN });
+  const rs3 = (await q(`SELECT parse_status,parsed_sender_name,parsed_sender_wallet,parsed_receiver_wallet,carrier,match_details FROM payment_sms ORDER BY created_at DESC LIMIT 1`)).rows[0];
+  ok('Orange name-only SMS parsed and stored (no SENDER_NOT_FOUND)', rs3.parse_status === 'PARSED' && rs3.parsed_sender_name === 'Mohamed N Ewedah' && rs3.parsed_sender_wallet === null && rs3.carrier === 'ORANGE', JSON.stringify(rs3));
+  ok('…left for the accountant as SENDER_NAME_ONLY (no wallet invented)', rp3.body.status === 'UNMATCHED' && rp3.body.reason === 'SENDER_NAME_ONLY' && rs3.match_details?.reason === 'SENDER_NAME_ONLY');
+  // Message 1 format ("من رقم", "تاريخ العملية:") auto-matches a pending Vodafone payment
+  const rm1amt = 5100 + Math.floor(Math.random() * 800); const rm1p = await pending(rm1amt);
+  const rNowCairo = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Cairo', hour: '2-digit', minute: '2-digit', year: '2-digit', month: '2-digit', day: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).reduce((a, p) => (a[p.type] = p.value, a), {});
+  const RM1 = `تم استلام مبلغ ${egp(rm1amt)} جنيه من رقم 01275555667 المسجل بإسم Alhussien R Kassem على رقم محفظتك  01044577552.\nرصيدك الحالي: 2500.17 جنيه\nتاريخ العملية: ${rNowCairo.hour}:${rNowCairo.minute} ${rNowCairo.year}-${rNowCairo.month}-${rNowCairo.day}\nرقم العملية: 0247${String(Date.now()).slice(-8)}\nتابع كل مصروفاتك http://vf.eg/vfcash`;
+  const rp1 = await raw(RM1, 'text/plain', { 'x-device-token': TOKEN });
+  ok('Message-1 format ("من رقم", "تاريخ العملية:") → MATCHED', rp1.body.status === 'MATCHED' && rp1.body.paymentId === rm1p, JSON.stringify(rp1.body));
+  // Message 4 format auto-matches an Orange payment
+  const ro4 = await order(cust, 6100 + Math.floor(Math.random() * 800)); const ro4p = (await me.req('POST', `/api/v1/customer/orders/${ro4.id}/payments`, { method: 'ORANGE_CASH' })).body.payment.id;
+  await me.req('POST', `/api/v1/customer/payments/${ro4p}/manual-proof`, { senderWallet: '01275555667', screenshot: { mime: 'image/png', data: PNG } });
+  const ro4amt = Number((await q(`SELECT total_minor FROM orders WHERE id=$1`, [ro4.id])).rows[0].total_minor);
+  const rp4 = await raw(`لقد استقبلت تحويل أموال بمبلغ ${egp(ro4amt)} جنيه من 00201275555667\nرصيد اورنچ كاش الجديد 115.49 جنيه رقم المعاملة 30${String(Date.now()).slice(-8)}`, 'text/plain', { 'x-device-token': TOKEN });
+  ok('Message-4 format (00201…, new line before "رصيد") → MATCHED', rp4.body.status === 'MATCHED' && rp4.body.paymentId === ro4p, JSON.stringify(rp4.body));
+  // An SMS that FAILED under the old parser is recovered by "re-read failed SMS" (in place, nothing deleted)
+  const rOldFailed = `تم استلام مبلغ 2500 جنيه من رقم 01012208430 المسجل بإسم Old Format على رقم محفظتك  01044577552.\nتاريخ العملية: 12:46 26-10-14\nرقم العملية: 0999${String(Date.now()).slice(-8)}`;
+  const rfh = crypto.createHash('sha256').update(rOldFailed.replace(/\s+/g, ' ').trim()).digest('hex');
+  const rDevRow = (await q(`SELECT id FROM payment_devices WHERE device_key=$1`, [DEVKEY])).rows[0];
+  const rFailedId = (await q(`INSERT INTO payment_sms(device_id,raw_message,message_hash,parse_status,parse_error,match_status,received_at) VALUES($1,$2,$3,'FAILED','SENDER_NOT_FOUND','MANUAL_REVIEW',now()) RETURNING id`, [rDevRow.id, rOldFailed, rfh])).rows[0].id;
+  const rBefore = Number((await q(`SELECT count(*) n FROM payment_sms`)).rows[0].n);
+  const rRep = await admin.req('POST', '/api/v1/admin/payment-sms/reprocess-failed', {});
+  const rFixed = (await q(`SELECT id,parse_status,parse_error,parsed_sender_wallet,parsed_sender_name,parsed_amount_minor FROM payment_sms WHERE id=$1`, [rFailedId])).rows[0];
+  ok('old SENDER_NOT_FOUND record re-read in place → PARSED with correct fields', rRep.status === 200 && rFixed.parse_status === 'PARSED' && rFixed.parse_error === null && rFixed.parsed_sender_wallet === '01012208430' && rFixed.parsed_sender_name === 'Old Format' && Number(rFixed.parsed_amount_minor) === 250000, JSON.stringify({ rRep: rRep.body, rFixed }));
+  ok('no SMS records deleted or duplicated by reprocessing', Number((await q(`SELECT count(*) n FROM payment_sms`)).rows[0].n) === rBefore);
+  ok('pasting a previously failed SMS also recovers it (not refused as duplicate)', (await admin.req('POST', '/api/v1/admin/payment-sms/manual', { message: rOldFailed })).body.duplicate === true); // already recovered → duplicate now
+  ok('customer cannot trigger reprocessing', (await me.req('POST', '/api/v1/admin/payment-sms/reprocess-failed', {})).status === 401);
+
   console.log('SECURITY');
   ok('34. invalid device token rejected', (await sendSms(sms('1.00', '01275555667').text, 'x'.repeat(40))).status === 401);
   await admin.req('PATCH', `/api/v1/admin/payment-devices/${dev.body.device.id}`, { enabled: false });

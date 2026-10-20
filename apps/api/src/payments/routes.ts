@@ -85,6 +85,19 @@ export function registerAdminPaymentRoutes(admin: FastifyInstance, d: Deps) {
     await d.pool.query(`INSERT INTO audit_logs(actor_type,actor_id,action,entity_type,entity_id,metadata) VALUES('STAFF',$1,'payment.sms_pasted','payments',$2,$3)`, [req.principal.id, r.paymentId || null, { status: r.status || null, reason: r.reason || null, duplicate: Boolean(r.duplicate) }]);
     return r;
   });
+  // Re-read SMS that failed to parse (after a parser fix). Records are updated in place, never deleted.
+  admin.post('/payment-sms/reprocess-failed', async (req: any) => {
+    d.requirePermission(req, 'payments:write'); d.requireCsrf(req);
+    const rows = (await d.pool.query(`SELECT id,device_id,raw_message,received_at FROM payment_sms WHERE parse_status='FAILED' ORDER BY created_at LIMIT 500`)).rows;
+    const out: Record<string, number> = { total: rows.length, parsed: 0, matched: 0, stillFailed: 0 };
+    for (const r of rows) {
+      const res: any = await ingestSms(d.pool, { deviceId: r.device_id, message: r.raw_message, receivedAt: new Date(r.received_at).toISOString() });
+      if (res.duplicate || res.status === 'MANUAL_REVIEW') out.stillFailed++; else { out.parsed++; if (res.status === 'MATCHED') out.matched++; }
+    }
+    await d.pool.query(`INSERT INTO audit_logs(actor_type,actor_id,action,entity_type,metadata) VALUES('STAFF',$1,'payment.sms_reprocessed','payment_sms',$2)`, [req.principal.id, out]);
+    plog('SMS_REPROCESS_FAILED_BATCH', out);
+    return out;
+  });
   admin.get('/payment-devices', async (req: any) => { d.requirePermission(req, 'payments:read'); return (await d.pool.query('SELECT id,device_key,name,enabled,last_seen_at,last_sms_at,created_at FROM payment_devices ORDER BY created_at')).rows; });
   admin.post('/payment-devices', async (req: any) => {
     d.requirePermission(req, 'payments:write'); d.requireCsrf(req);

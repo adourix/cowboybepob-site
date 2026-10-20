@@ -1,19 +1,21 @@
 import { normalizeDigits, parseMajorToMinor } from './money.js';
 
 /**
- * Vodafone Cash / Orange Cash "money received" SMS parser.
+ * Wallet "money received" SMS parser (Vodafone Cash, Orange Cash, and similar formats).
  *
- * Supported Vodafone variants include:
- *   - "تم استلام مبلغ 2500 جنيه من رقم 01012208430 المسجل بإسم ... على رقم محفظتك ..."
- *   - "تم استلام مبلغ 80.00 جنيه من 01275555667؛ المسجل بإسم ... على رقم محفظتك ... بتاريخ ..."
+ * Design: DATA EXTRACTION first, provider label last. One pass extracts:
+ *   amount → sender (phone if present, otherwise name) → receiver (if present) →
+ *   balance → reference → transaction date/time (if present).
+ * A valid receipt is never rejected because the provider is ambiguous.
  *
- * Supported Orange variants include:
- *   - sender name: "... بمبلغ 5005.00 جنيه من Mohamed N Ewedah، رصيدك الحالي ... رقم المعاملة ..."
- *   - sender name with Vodafone-like prefix: "تم استلام مبلغ 5.00 جنيه من Abdelrahman I Ayad، رصيدك الحالي ... رقم المعاملة ..." plus Orange campaign text
- *   - sender wallet: "... بمبلغ 115.00 جنيه من 00201275555667 رصيد اورنچ كاش الجديد ..."
+ * Real formats covered by regression tests (payments.test.ts):
+ *   Vodafone: "تم استلام مبلغ 2500 جنيه من رقم 01012208430 المسجل بإسم … على رقم محفظتك … تاريخ العملية: 12:46 26-10-14 …"
+ *   Vodafone: "تم استلام مبلغ 80.00 جنيه من 01275555667؛ المسجل بإسم … على رقم محفظتك … بتاريخ 02:09 26-10-20. …"
+ *   Orange:   "تم استلام مبلغ 5005.00 جنيه من Mohamed N Ewedah، رصيدك الحالي 5005.20 جنية، رقم المعاملة …" + campaign text
+ *   Orange:   "لقد استقبلت تحويل أموال بمبلغ 115.00 جنيه من 00201275555667 رصيد اورنچ كاش الجديد … رقم المعاملة …"
  *
- * Orange SMS does not contain a receiving wallet or transaction date/time, so the
- * configured Orange receiving wallet and the phone's receivedAt timestamp are used.
+ * When the SMS has no receiving wallet (Orange), the configured receiving wallet is used (ORANGE_CASH_RECEIVING_WALLET);
+ * when it has no date/time, the phone's receivedAt is used. Missing data is never invented (e.g. no wallet from a name).
  */
 export type Carrier = 'VODAFONE' | 'ORANGE';
 export type ParsedSms = {
@@ -24,7 +26,7 @@ export type ParsedSms = {
   amountMinor: number;
   senderWallet: string | null;
   senderName: string | null;
-  receiverWallet: string;
+  receiverWallet: string | null; // null only when the SMS has none and no wallet is configured
   transactionTime: string;
   transactionDate: string;
   occurredAt: Date;
@@ -58,77 +60,97 @@ function cairoParts(at: Date) {
   }).formatToParts(at).map(x => [x.type, x.value]));
 }
 
+const CUR = 'جن(?:يه|ية)';                                   // "جنيه" or the common misspelling "جنية"
+const NUM = '([\\d,]+(?:\\.\\d{1,2})?)';
+const PHONE = '(\\+?\\d[\\d \\-]{8,16}\\d)';                   // digits, spaces or dashes; stops at the first letter ("…667رصيد")
+const ORANGE_MARK = /(?:ا|أ)ورن(?:ج|چ)\s*كاش|orange\.eg|استقبلت\s*تحويل\s*(?:أ|ا)موال/i;
+const VODAFONE_MARK = /vf\.eg|فودافون|رقم\s*محفظتك/i;
+
 /**
- * Orange Cash "money received" SMS.
- *
- * Orange has two real formats in use here: one gives the sender wallet, while
- * another gives only the sender's display name. Never invent a wallet for the
- * name-only format; senderWallet remains null and the existing matcher will
- * correctly leave that payment for review instead of falsely auto-matching it.
+ * Text prep: Arabic-Indic digits → ASCII, spaces collapsed, but line breaks KEPT
+ * (a line break ends a sender name, e.g. "المسجل بإسم NAME\nعلى رقم محفظتك").
  */
-export function parseOrangeCashSms(raw: string, ctx: { receivedAt: Date; ourWallet: string | null }): ParsedSms | ParseFailure {
-  const fail = (reason: string): ParseFailure => ({ ok: false, reason, looksLikeVodafoneCash: looksLikeVodafoneCash(raw || '') });
+function prep(raw: string) {
+  return normalizeDigits(raw).replace(/\r/g, '').replace(/[ \t\u00A0\u200F\u200E]+/g, ' ').replace(/ *\n */g, '\n').trim();
+}
+
+/** The single extraction pass used by every entry point below. */
+export function extractWalletReceipt(raw: string, ctx: { receivedAt?: Date; configuredWallet?: string | null }): ParsedSms | ParseFailure {
+  const looks = looksLikeWalletSms(raw || '');
+  const fail = (reason: string): ParseFailure => ({ ok: false, reason, looksLikeVodafoneCash: looks });
   if (!raw || raw.length > 2000) return fail('EMPTY_OR_TOO_LONG');
-  const t = normalizeDigits(raw).replace(/\s+/g, ' ');
-  if (!/استقبلت\s*تحويل\s*أموال|(?:ا|أ)ورن(?:ج|چ)\s*كاش|myo\.orange\.eg\//i.test(t)) return fail('NOT_A_RECEIPT');
+  const t = prep(raw);
+  if (!/تم\s*استلام\s*مبلغ|استقبلت\s*تحويل\s*(?:أ|ا)موال/.test(t)) return fail('NOT_A_RECEIPT');
 
-  const amount = t.match(/(?:بمبلغ|استلام\s*مبلغ)\s*([\d,]+(?:\.\d{1,2})?)\s*جن(?:يه|ية)/);
+  // 1. amount
+  const amount = new RegExp(`(?:استلام\\s*مبلغ|بمبلغ)\\s*${NUM}\\s*${CUR}`).exec(t);
   if (!amount) return fail('AMOUNT_NOT_FOUND');
+  const amountMinor = parseMajorToMinor(amount[1]);
+  if (amountMinor == null || amountMinor <= 0) return fail('AMOUNT_INVALID');
 
-  // Allow Arabic/ASCII punctuation between sender name/number and the balance.
-  // Real Orange messages use the Arabic comma: "من Abdelrahman I Ayad، رصيدك...".
-  const afterAmount = t.match(/جن(?:يه|ية)\s*من\s*(.+?)(?=\s*[،,؛]?\s*رصيد(?:ك|\s*(?:ا|أ)ورن(?:ج|چ)\s*كاش)|\s*$)/);
-  const senderRaw = afterAmount?.[1]?.trim().replace(/[؛،,]+$/, '').trim() || null;
-  if (!senderRaw) return fail('SENDER_NOT_FOUND');
-
-  let senderWallet: string | null = null;
-  let senderName: string | null = null;
-  const walletCandidate = senderRaw.match(/^\+?[0-9][0-9\s-]{9,15}$/);
-  if (walletCandidate) {
-    senderWallet = normalizeWallet(walletCandidate[0]);
+  // 2. sender: the text right after "<amount> جنيه من [رقم]" — a phone number, or else a name
+  const rest = t.slice(amount.index + amount[0].length);
+  const from = /^\s*من\s*(?:رقم\s*)?/.exec(rest);
+  if (!from) return fail('SENDER_NOT_FOUND');
+  const seg = rest.slice(from[0].length);
+  let senderWallet: string | null = null, senderName: string | null = null;
+  const phone = new RegExp(`^${PHONE}`).exec(seg);
+  if (phone) {
+    senderWallet = normalizeWallet(phone[1]);
     if (!senderWallet) return fail('SENDER_INVALID');
+    const reg = /المسجل\s*ب(?:إ|ا)سم\s*(.+?)\s*(?=على\s*رقم\s*محفظتك|[،,؛;\n]|$)/.exec(t);
+    senderName = reg ? reg[1].trim().slice(0, 120) || null : null;
   } else {
-    senderName = senderRaw.replace(/[؛،,]+$/, '').trim().slice(0, 120) || null;
+    // A name ends at Arabic/English punctuation, a line break, or the next known field.
+    const nm = /^(.+?)\s*(?=[،,؛;\n]|\.(?:\s|$)|المسجل|رصيد|على\s*رقم|رقم\s*(?:العملية|المعاملة)|$)/.exec(seg);
+    senderName = nm ? nm[1].replace(/[\s.،,؛;]+$/, '').trim().slice(0, 120) || null : null;
     if (!senderName) return fail('SENDER_NOT_FOUND');
   }
 
-  const amountMinor = parseMajorToMinor(amount[1]);
-  if (amountMinor == null || amountMinor <= 0) return fail('AMOUNT_INVALID');
-  if (!ctx.ourWallet) return fail('ORANGE_WALLET_NOT_CONFIGURED');
-  if (isNaN(ctx.receivedAt.getTime())) return fail('DATE_INVALID');
+  // 3. receiver: in the SMS if present (Vodafone), else the configured wallet (Orange has none)
+  let receiverWallet: string | null = null, receiverFromConfig = false;
+  const recv = new RegExp(`رقم\\s*محفظتك\\s*:?\\s*${PHONE}`).exec(t);
+  if (recv) { receiverWallet = normalizeWallet(recv[1]); if (!receiverWallet) return fail('RECEIVER_INVALID'); }
+  else if (ctx.configuredWallet) { receiverWallet = ctx.configuredWallet; receiverFromConfig = true; }
 
-  const balance = t.match(/رصيد(?:ك\s*الحالي|\s*(?:ا|أ)ورن(?:ج|چ)\s*كاش\s*الجديد)\s*:?\s*([\d,]+(?:\.\d{1,2})?)\s*جن(?:يه|ية)?/);
-  const ref = t.match(/رقم\s*(?:المعاملة|العملية)\s*:?\s*([A-Za-z0-9]{6,32})/);
-  const parts = cairoParts(ctx.receivedAt);
+  // 4. transaction time: in the SMS if present, else when the phone received it
+  let occurredAt: Date, transactionTime: string, transactionDate: string, timeFromReceipt = false;
+  const when = /(?:بتاريخ|تاريخ\s*العملية)\s*:?\s*(\d{1,2}):(\d{2})\s*(\d{2,4})[-/.‐–](\d{1,2})[-/.‐–](\d{1,2})/.exec(t);
+  if (when) {
+    const [hh, mm, yy, mo, dd] = [Number(when[1]), Number(when[2]), Number(when[3]), Number(when[4]), Number(when[5])];
+    const year = yy < 100 ? 2000 + yy : yy;
+    if (hh > 23 || mm > 59 || mo < 1 || mo > 12 || dd < 1 || dd > 31) return fail('DATE_INVALID');
+    occurredAt = cairoToUtc(year, mo, dd, hh, mm);
+    transactionTime = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+    transactionDate = `${year}-${String(mo).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+  } else {
+    if (!ctx.receivedAt || isNaN(ctx.receivedAt.getTime())) return fail('DATE_NOT_FOUND');
+    occurredAt = ctx.receivedAt; timeFromReceipt = true;
+    const p = cairoParts(ctx.receivedAt);
+    transactionTime = `${p.hour}:${p.minute}`; transactionDate = `${p.year}-${p.month}-${p.day}`;
+  }
+
+  // 5. balance + reference
+  const balance = new RegExp(`رصيد(?:ك)?\\s*(?:الحالي|(?:ا|أ)ورن(?:ج|چ)\\s*كاش\\s*الجديد|الجديد)\\s*:?\\s*${NUM}`).exec(t);
+  const ref = /رقم\s*(?:العملية|المعاملة)\s*:?\s*([A-Za-z0-9]{6,32})/.exec(t);
+
+  // 6. provider label (informational only)
+  const carrier: Carrier | undefined = recv && VODAFONE_MARK.test(t) ? 'VODAFONE' : ORANGE_MARK.test(t) ? 'ORANGE' : VODAFONE_MARK.test(t) ? 'VODAFONE' : undefined;
 
   return {
-    ok: true,
-    carrier: 'ORANGE',
-    receiverFromConfig: true,
-    timeFromReceipt: true,
-    amountMinor,
-    senderWallet,
-    senderName,
-    receiverWallet: ctx.ourWallet,
-    transactionTime: `${parts.hour}:${parts.minute}`,
-    transactionDate: `${parts.year}-${parts.month}-${parts.day}`,
-    occurredAt: ctx.receivedAt,
-    balanceMinor: balance ? parseMajorToMinor(balance[1]) : null,
-    reference: ref ? ref[1] : null,
+    ok: true, carrier, receiverFromConfig, timeFromReceipt, amountMinor, senderWallet, senderName, receiverWallet,
+    transactionTime, transactionDate, occurredAt, balanceMinor: balance ? parseMajorToMinor(balance[1]) : null, reference: ref ? ref[1] : null,
   };
 }
 
-/** Picks the right parser for the SMS format. */
+/** Entry point used by ingestion. `orangeWallet` is the configured wallet for receipts that don't name one. */
 export function parseWalletSms(raw: string, ctx: { receivedAt: Date; orangeWallet: string | null }): ParsedSms | ParseFailure {
-  // Orange must be classified before Vodafone. Some Orange messages use the
-  // same "تم استلام مبلغ ... جنيه من ..." prefix as Vodafone, then identify
-  // themselves later in the message through Orange Cash/campaign text.
-  if (looksLikeOrangeCash(raw)) {
-    const orange = parseOrangeCashSms(raw, { receivedAt: ctx.receivedAt, ourWallet: ctx.orangeWallet });
-    if (orange.ok) return orange;
-  }
-  const r = parseVodafoneCashSms(raw);
-  return r.ok ? { ...r, carrier: 'VODAFONE' } : r;
+  return extractWalletReceipt(raw, { receivedAt: ctx.receivedAt, configuredWallet: ctx.orangeWallet });
+}
+
+/** Compatibility wrapper (same extraction). */
+export function parseOrangeCashSms(raw: string, ctx: { receivedAt: Date; ourWallet: string | null }): ParsedSms | ParseFailure {
+  return extractWalletReceipt(raw, { receivedAt: ctx.receivedAt, configuredWallet: ctx.ourWallet });
 }
 
 /** Africa/Cairo wall-clock → UTC instant (handles Egypt DST via ICU). */
@@ -140,47 +162,7 @@ export function cairoToUtc(y: number, mo: number, d: number, h: number, mi: numb
   return new Date(guess - off2);
 }
 
-export function parseVodafoneCashSms(raw: string): ParsedSms | ParseFailure {
-  const looks = looksLikeVodafoneCash(raw || '');
-  const fail = (reason: string): ParseFailure => ({ ok: false, reason, looksLikeVodafoneCash: looks });
-  if (!raw || raw.length > 2000) return fail('EMPTY_OR_TOO_LONG');
-  const t = normalizeDigits(raw).replace(/\s+/g, ' ');
-  if (!/تم\s*استلام\s*مبلغ/.test(t)) return fail('NOT_A_RECEIPT');
-
-  const amount = t.match(/استلام\s*مبلغ\s*([\d,]+(?:\.\d{1,2})?)\s*جنيه/);
-  const sender = t.match(/جنيه\s*من\s*(?:رقم\s*)?(\+?\d[\d\s-]{9,15})/);
-  const receiver = t.match(/رقم\s*محفظتك\s*(\+?\d[\d\s-]{9,15})/);
-  const when = t.match(/(?:بتاريخ|تاريخ\s*العملية)\s*:?\s*(\d{1,2}):(\d{2})\s*(\d{2,4})-(\d{1,2})-(\d{1,2})/);
-  if (!amount) return fail('AMOUNT_NOT_FOUND');
-  if (!sender) return fail('SENDER_NOT_FOUND');
-  if (!receiver) return fail('RECEIVER_NOT_FOUND');
-  if (!when) return fail('DATE_NOT_FOUND');
-
-  const amountMinor = parseMajorToMinor(amount[1]);
-  const senderWallet = normalizeWallet(sender[1]);
-  const receiverWallet = normalizeWallet(receiver[1]);
-  if (amountMinor == null || amountMinor <= 0) return fail('AMOUNT_INVALID');
-  if (!senderWallet) return fail('SENDER_INVALID');
-  if (!receiverWallet) return fail('RECEIVER_INVALID');
-
-  const [hh, mm, yy, mo, dd] = [Number(when[1]), Number(when[2]), Number(when[3]), Number(when[4]), Number(when[5])];
-  const year = yy < 100 ? 2000 + yy : yy;
-  if (hh > 23 || mm > 59 || mo < 1 || mo > 12 || dd < 1 || dd > 31) return fail('DATE_INVALID');
-  const occurredAt = cairoToUtc(year, mo, dd, hh, mm);
-  const name = t.match(/المسجل\s*ب(?:إ|ا)سم\s*(.+?)\s*على\s*رقم\s*محفظتك/);
-  const balance = t.match(/رصيدك\s*الحالي\s*:?\s*([\d,]+(?:\.\d{1,2})?)/);
-  const ref = t.match(/رقم\s*العملية\s*:?\s*([A-Za-z0-9]{6,32})/);
-
-  return {
-    ok: true,
-    amountMinor,
-    senderWallet,
-    senderName: name ? name[1].trim().slice(0, 120) : null,
-    receiverWallet,
-    transactionTime: `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`,
-    transactionDate: `${year}-${String(mo).padStart(2, '0')}-${String(dd).padStart(2, '0')}`,
-    occurredAt,
-    balanceMinor: balance ? parseMajorToMinor(balance[1]) : null,
-    reference: ref ? ref[1] : null,
-  };
+/** Compatibility wrapper (same extraction). Without receivedAt, a receipt must carry its own date. */
+export function parseVodafoneCashSms(raw: string, receivedAt?: Date): ParsedSms | ParseFailure {
+  return extractWalletReceipt(raw, { receivedAt, configuredWallet: null });
 }
