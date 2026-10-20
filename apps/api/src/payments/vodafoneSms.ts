@@ -144,7 +144,7 @@ export function parseVodafoneCashSms(raw: string): ParsedSms | ParseFailure {
   const amount = t.match(/استلام\s*مبلغ\s*([\d,]+(?:\.\d{1,2})?)\s*جنيه/);
   const sender = t.match(/جنيه\s*من\s*(?:رقم\s*)?(\+?\d[\d\s-]{9,15})/);
   const receiver = t.match(/رقم\s*محفظتك\s*(\+?\d[\d\s-]{9,15})/);
-  const when = t.match(/(?:بتاريخ|تاريخ\s*العملية)\s*:??\s*(\d{1,2}):(\d{2})\s*(\d{2,4})-(\d{1,2})-(\d{1,2})/);
+  const when = t.match(/(?:بتاريخ|تاريخ\s*العملية)\s*:?\s*(\d{1,2}):(\d{2})\s*(\d{2,4})-(\d{1,2})-(\d{1,2})/);
   if (!amount) return fail('AMOUNT_NOT_FOUND');
   if (!sender) return fail('SENDER_NOT_FOUND');
   if (!receiver) return fail('RECEIVER_NOT_FOUND');
