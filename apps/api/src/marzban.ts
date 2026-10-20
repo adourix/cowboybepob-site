@@ -192,6 +192,10 @@ export class MarzbanProvider {
     return await this.request('/api/user', { method: 'POST', body: JSON.stringify(payload) }) as MarzbanUser;
   }
 
+  async resetUserDataUsage(username: string) {
+    await this.request(`/api/user/${encodeURIComponent(username)}/reset`, { method: 'POST' });
+  }
+
   async listInbounds(): Promise<MarzbanInbound[]> {
     return flattenInboundResponse(await this.request('/api/inbounds'));
   }
