@@ -141,6 +141,7 @@ export class MarzbanProvider {
   private tokenExpires = 0;
   private resolved?: ProviderSecret;
   private effectiveUrl?: string;
+  private readonly resetUsers = new Set<string>();
 
   constructor(
     private readonly baseUrl: string,
@@ -187,13 +188,29 @@ export class MarzbanProvider {
 
   async createOrUpdate(input: any): Promise<MarzbanUser> {
     const existing = await this.getUser(input.username);
-    const payload = { username: input.username, proxies: { [input.protocol]: { id: input.uuid, flow: input.flow || '' } }, inbounds: { [input.protocol]: [input.inbound] }, expire: Math.floor(new Date(input.expireAt).getTime() / 1000), data_limit: Number(input.quotaBytes || 0) };
+    const expire = Math.floor(new Date(input.expireAt).getTime() / 1000);
+    if (existing && Number.isFinite(expire) && Number(existing.expire || 0) < expire && !this.resetUsers.has(input.username)) {
+      await this.resetUserDataUsage(input.username);
+    }
+    const payload = { username: input.username, proxies: { [input.protocol]: { id: input.uuid, flow: input.flow || '' } }, inbounds: { [input.protocol]: [input.inbound] }, expire, data_limit: Number(input.quotaBytes || 0) };
     if (existing) return await this.request(`/api/user/${encodeURIComponent(input.username)}`, { method: 'PUT', body: JSON.stringify(payload) }) as MarzbanUser;
     return await this.request('/api/user', { method: 'POST', body: JSON.stringify(payload) }) as MarzbanUser;
   }
 
   async resetUserDataUsage(username: string) {
     await this.request(`/api/user/${encodeURIComponent(username)}/reset`, { method: 'POST' });
+    this.resetUsers.add(username);
+    await pool.query(`
+      UPDATE subscriptions
+      SET used_bytes=0, updated_at=now()
+      WHERE id IN (
+        SELECT sub.id
+        FROM subscriptions sub
+        JOIN proxy_accounts pa ON pa.service_id=sub.service_id
+        WHERE pa.external_username=$1
+          AND pa.status<>'DELETED'
+      )
+    `, [username]);
   }
 
   async listInbounds(): Promise<MarzbanInbound[]> {
