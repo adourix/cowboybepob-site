@@ -171,9 +171,13 @@ export async function submitManualProof(pool: Pool, input: { paymentId: string; 
       const m = matchSms(smsFromRow(s), [pendingFromRow(row)], { skewMinutes: cfg.smsClockSkewMinutes });
       if (m.status === 'MATCHED') return autoVerify(c, row, s, m);
     }
-    // No SMS yet: the customer finished paying, so the config runs until the accountant reviews it.
-    const allowed = await mayActivateOnProof(c, row, input.customerId);
-    if (!allowed.ok) { plog('PROVISIONAL_ACTIVATION_SKIPPED', { paymentId: row.id, reason: allowed.reason }); return row; }
+    // No SMS yet: the customer submitted proof.
+    // Activate the service immediately and keep the payment under accountant review.
+    // SMS matching, when it arrives later, will auto-verify the payment.
+    if (!cfg.activateOnProof) {
+      plog('PROVISIONAL_ACTIVATION_SKIPPED', { paymentId: row.id, reason: 'DISABLED' });
+      return row;
+    }
     return provisionalActivate(c, row, 'PROOF_SUBMITTED');
   });
   plog('PAYMENT_PROOF_SUBMITTED', { paymentId: input.paymentId, status: result.status });
