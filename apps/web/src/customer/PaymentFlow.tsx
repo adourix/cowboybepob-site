@@ -99,12 +99,14 @@ export function PaymentStatus({ initial, onDone }: { initial: any; onDone?: () =
     const t = window.setTimeout(() => void api(`/api/v1/customer/payments/${p.id}`).then(setP).catch(() => { }), 5000);
     return () => window.clearTimeout(t);
   }, [p]);
-  const [text, tone] = PAY_STATUS[p.status] || [p.status, 'idle'];
+  const live = p.provisionalActivation && ['PENDING_VERIFICATION', 'AUTO_VERIFIED'].includes(p.status);
+  const [text, tone] = live ? ['تم استلام بيانات الدفع — خدمتك تعمل الآن', 'ok'] as [string, 'ok'] : (PAY_STATUS[p.status] || [p.status, 'idle']);
   const icon = tone === 'ok' ? <CheckCircle2 size={56} /> : tone === 'bad' ? <XCircle size={56} /> : p.status === 'AWAITING_TRANSFER' || p.status === 'CHECKOUT_STARTED' ? <Clock3 size={56} /> : <Loader2 size={56} className="spin" />;
   return <div className={`pay-status t-${tone}`} role="status" aria-live="polite">
     {icon}<h3>{text}</h3>
-    {p.status === 'PENDING_VERIFICATION' && <p>بمجرد وصول رسالة التحويل لمحفظتنا سيتم التحقق تلقائيًا. يمكنك إغلاق هذه النافذة؛ ستجد الحالة في «طلباتي».</p>}
-    {p.status === 'AUTO_VERIFIED' && <p>تم العثور على تحويلك. خدمتك تعمل الآن، ويؤكد المحاسب الدفع خلال 24 ساعة.</p>}
+    {live && <p>الكونفيج مفعّل الآن، ويراجع المحاسب التحويل قبل {p.reviewExpiresAt ? new Date(p.reviewExpiresAt).toLocaleString('ar-EG', { weekday: 'long', hour: '2-digit', minute: '2-digit' }) : 'مرور 24 ساعة'}. إذا لم يتم تأكيد التحويل يتوقف الكونفيج تلقائيًا.</p>}
+    {!live && p.status === 'PENDING_VERIFICATION' && <p>استلمنا بيانات الدفع، وسيتم تفعيل الطلب بعد مراجعة المحاسب للتحويل. ستجد الحالة في «طلباتي».</p>}
+    {!live && p.status === 'AUTO_VERIFIED' && <p>تم العثور على تحويلك، ويؤكد المحاسب الدفع قريبًا.</p>}
     {p.status === 'PAID' && <p>شكرًا لك! يتم تجهيز طلبك الآن.</p>}
     {['REJECTED', 'REVIEW_EXPIRED'].includes(p.status) && <p>لم نتمكن من تأكيد الدفع. إذا كنت حوّلت المبلغ، تواصل معنا ومعك رقم الطلب.</p>}
     <dl className="kv small"><div><dt>المبلغ</dt><dd>{moneyNum(p.amountMinor)} جنيه</dd></div><div><dt>الطريقة</dt><dd>{p.method === 'VODAFONE_CASH' ? 'فودافون كاش' : p.method === 'ORANGE_CASH' ? 'أورنج كاش' : p.method === 'APPLE_PAY' ? 'Apple Pay' : 'بطاقة'}</dd></div></dl>

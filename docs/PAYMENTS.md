@@ -35,7 +35,12 @@ AUTO_VERIFIED / PENDING_VERIFICATION ─(accountant rejects)→ REJECTED
 AWAITING_TRANSFER ─(window passed)→ EXPIRED
 ```
 
-* **AUTO_VERIFIED activates the service immediately** (business rule) for the review window. Orders containing
+* **The config is activated as soon as the customer submits wallet + receipt** (`PAYMENT_ACTIVATE_ON_PROOF=true`),
+  without waiting for the SMS, and runs until the accountant reviews it (deadline `ACCOUNTANT_REVIEW_HOURS`, 24h).
+  Guards against fake receipts: only one provisionally active payment per customer at a time, and customers with a
+  rejected / expired-review wallet payment in the last `PAYMENT_PROOF_ACTIVATION_BLOCK_DAYS` (30) wait for the accountant.
+  The accountant confirms after checking the wallet app (a note is optional; required only after the deadline passed).
+* **AUTO_VERIFIED (SMS matched) also activates immediately** if not already active. Orders containing
   a router are **not** activated or shipped until `PAID`.
 * `REVIEW_EXPIRED` or `REJECTED` after activation suspends the order's services. A later confirmation resumes them.
 * The screenshot is supporting evidence only. Confirming a payment that was not SMS-matched requires a written reason.

@@ -362,3 +362,5 @@ td code{color:var(--glow);white-space:normal;word-break:break-all}
 .macrodroid ol{margin:12px 0;padding-inline-start:20px;display:flex;flex-direction:column;gap:10px;line-height:1.8}
 .macrodroid code{padding:2px 6px;border-radius:3px;background:var(--space);color:var(--brass);font-size:13px}
 .copy-line{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+
+.live-tag{color:var(--go);font-size:12px;font-weight:600}.deadline{color:var(--brass);font-weight:600;white-space:nowrap}

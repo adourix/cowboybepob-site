@@ -51,7 +51,7 @@ export function OrdersPage() {
               <div className="order-act">
                 <button className="cx-btn small outline-gold" onClick={() => setView(o)}>عرض التفاصيل</button>
                 {o.status === 'PENDING_PAYMENT' && <button className="cx-btn small gold" onClick={() => setPayOrder(o.id)}>{['PENDING_VERIFICATION', 'AUTO_VERIFIED'].includes(o.payment_status) ? 'حالة الدفع' : 'ادفع الآن'}</button>}
-                {o.payment_status && PAY_STATUS[o.payment_status] && o.status !== 'COMPLETED' && <span className={`pay-chip t-${PAY_STATUS[o.payment_status][1]}`}>{PAY_STATUS[o.payment_status][0]}</span>}
+                {o.payment_status && PAY_STATUS[o.payment_status] && o.status !== 'COMPLETED' && <span className={`pay-chip t-${['PENDING_VERIFICATION', 'AUTO_VERIFIED'].includes(o.payment_status) && o.status !== 'PENDING_PAYMENT' ? 'ok' : PAY_STATUS[o.payment_status][1]}`}>{['PENDING_VERIFICATION', 'AUTO_VERIFIED'].includes(o.payment_status) && o.status !== 'PENDING_PAYMENT' ? 'مفعّل لحين مراجعة الدفع' : PAY_STATUS[o.payment_status][0]}</span>}
                 {o.status === 'PENDING_PAYMENT' && !['PENDING_VERIFICATION', 'AUTO_VERIFIED'].includes(o.payment_status) ? <button className="cx-btn small outline-red" onClick={() => cancel(o)}><X size={15} />إلغاء الطلب</button>
                   : o.status === 'SHIPPED' ? <button className="cx-btn small outline" onClick={() => setView(o)}><Truck size={15} />تتبع الشحنة</button>
                   : o.status === 'COMPLETED' ? <span className="done-chip"><Check size={15} />{kind === 'config' ? 'تم التفعيل' : 'تم التسليم'}</span>

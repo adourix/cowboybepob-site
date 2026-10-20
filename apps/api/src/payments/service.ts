@@ -171,7 +171,10 @@ export async function submitManualProof(pool: Pool, input: { paymentId: string; 
       const m = matchSms(smsFromRow(s), [pendingFromRow(row)], { skewMinutes: cfg.smsClockSkewMinutes });
       if (m.status === 'MATCHED') return autoVerify(c, row, s, m);
     }
-    return row;
+    // No SMS yet: the customer finished paying, so the config runs until the accountant reviews it.
+    const allowed = await mayActivateOnProof(c, row, input.customerId);
+    if (!allowed.ok) { plog('PROVISIONAL_ACTIVATION_SKIPPED', { paymentId: row.id, reason: allowed.reason }); return row; }
+    return provisionalActivate(c, row, 'PROOF_SUBMITTED');
   });
   plog('PAYMENT_PROOF_SUBMITTED', { paymentId: input.paymentId, status: result.status });
   return publicPayment(result);
@@ -204,19 +207,42 @@ export async function createDevice(pool: Pool, name: string, deviceKey: string) 
 const smsFromRow = (s: any) => ({ ok: true as const, amountMinor: Number(s.parsed_amount_minor), senderWallet: s.parsed_sender_wallet, senderName: s.parsed_sender_name, receiverWallet: s.parsed_receiver_wallet, transactionTime: '', transactionDate: '', occurredAt: new Date(s.parsed_transaction_time), balanceMinor: null, reference: s.parsed_transaction_reference });
 const pendingFromRow = (p: any): PendingPayment => ({ id: p.id, amountMinor: Number(p.amount_minor), customerWallet: p.customer_wallet, receivingWallet: p.receiving_wallet, createdAt: new Date(p.created_at), expiresAt: p.expires_at ? new Date(p.expires_at) : null });
 
+/**
+ * Business rule: the config runs while the accountant reviews (ACCOUNTANT_REVIEW_HOURS).
+ * Never for orders containing a router. Returns the (possibly updated) payment row.
+ */
+async function provisionalActivate(c: PoolClient, p: any, why: 'SMS_MATCHED' | 'PROOF_SUBMITTED') {
+  const cfg = paymentConfig();
+  if (!cfg.provisionalActivation || await orderHasRouter(c, p.order_id)) return p;
+  const o = (await c.query(`UPDATE orders SET status='PAID',updated_at=now() WHERE id=$1 AND status='PENDING_PAYMENT' RETURNING id`, [p.order_id])).rows[0];
+  if (!o) return p;
+  await enqueueFulfillment(c, p.order_id);
+  const row = (await c.query(`UPDATE payments SET provisional_activation=true,review_expires_at=COALESCE(review_expires_at,now()+make_interval(hours=>$2)) WHERE id=$1 RETURNING *`, [p.id, cfg.reviewHours])).rows[0];
+  await c.query('INSERT INTO payment_audit_logs(payment_id,actor_type,previous_status,new_status,reason) VALUES($1,$2,$3,$3,$4)', [p.id, 'SYSTEM', row.status, `PROVISIONAL_ACTIVATION:${why}`]);
+  plog('PAYMENT_PROVISIONAL_ACTIVATION', { paymentId: p.id, orderId: p.order_id, why });
+  return row;
+}
+
+/** Guards against free 24h service from fake receipts. */
+async function mayActivateOnProof(c: PoolClient, p: any, customerId: string) {
+  const cfg = paymentConfig();
+  if (!cfg.activateOnProof) return { ok: false, reason: 'DISABLED' };
+  const open = await c.query(`SELECT 1 FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.customer_id=$1 AND p.id<>$2 AND p.provisional_activation AND p.status IN ('PENDING_VERIFICATION','AUTO_VERIFIED') LIMIT 1`, [customerId, p.id]);
+  if (open.rowCount) return { ok: false, reason: 'ANOTHER_PAYMENT_UNDER_REVIEW' };
+  const bad = await c.query(`SELECT 1 FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.customer_id=$1 AND p.provider='MANUAL_WALLET' AND p.status IN ('REJECTED','REVIEW_EXPIRED') AND p.updated_at>now()-make_interval(days=>$2) LIMIT 1`, [customerId, cfg.proofActivationBlockDays]);
+  if (bad.rowCount) return { ok: false, reason: 'RECENT_REJECTION' };
+  return { ok: true, reason: null };
+}
+
 async function autoVerify(c: PoolClient, p: any, sms: any, m: any) {
   const cfg = paymentConfig();
   await c.query(`UPDATE payment_sms SET payment_id=$1,match_status='MATCHED',match_details=$2 WHERE id=$3`, [p.id, m, sms.id]);
-  let row = await transition(c, p, 'AUTO_VERIFIED', { type: 'SYSTEM' }, 'SMS_MATCHED', { smsId: sms.id, reference: sms.parsed_transaction_reference }, {
-    auto_verified_at: new Date(), review_expires_at: new Date(Date.now() + cfg.reviewHours * 3600000), match_details: JSON.stringify(m), provider_reference: sms.parsed_transaction_reference,
+  // Keep the deadline that started at proof time, if the config was already activated then.
+  const row = await transition(c, p, 'AUTO_VERIFIED', { type: 'SYSTEM' }, 'SMS_MATCHED', { smsId: sms.id, reference: sms.parsed_transaction_reference }, {
+    auto_verified_at: new Date(), review_expires_at: p.review_expires_at || new Date(Date.now() + cfg.reviewHours * 3600000), match_details: JSON.stringify(m), provider_reference: sms.parsed_transaction_reference,
   });
   plog('PAYMENT_AUTO_VERIFIED', { paymentId: p.id, orderId: p.order_id, smsId: sms.id });
-  // Business rule: service runs for the review window while the accountant decides. Routers are never shipped provisionally.
-  if (cfg.provisionalActivation && !(await orderHasRouter(c, p.order_id))) {
-    const o = (await c.query(`UPDATE orders SET status='PAID',updated_at=now() WHERE id=$1 AND status='PENDING_PAYMENT' RETURNING id`, [p.order_id])).rows[0];
-    if (o) { await enqueueFulfillment(c, p.order_id); row = (await c.query('UPDATE payments SET provisional_activation=true WHERE id=$1 RETURNING *', [p.id])).rows[0]; plog('PAYMENT_PROVISIONAL_ACTIVATION', { paymentId: p.id, orderId: p.order_id }); }
-  }
-  return row;
+  return provisionalActivate(c, row, 'SMS_MATCHED');
 }
 
 export async function ingestSms(pool: Pool, input: { deviceId: string; message: string; receivedAt: string }) {
@@ -263,10 +289,10 @@ export async function confirmPayment(pool: Pool, input: { paymentId: string; sta
     if (p.provider === 'KASHIER') throw new PaymentError('دفعات Kashier تتأكد تلقائيًا من الـWebhook فقط.', 409, 'PROVIDER_VERIFIED_ONLY');
     if (!['AUTO_VERIFIED', 'PENDING_VERIFICATION', 'REVIEW_EXPIRED', 'INITIATED', 'PENDING'].includes(p.status)) throw new PaymentError('لا يمكن تأكيد هذه الدفعة في حالتها الحالية', 409, 'BAD_STATE');
     const reason = String(input.reason || '').trim().slice(0, 500);
-    if (p.status !== 'AUTO_VERIFIED' && reason.length < 3) throw new PaymentError('هذه الدفعة لم تُطابق تلقائيًا مع رسالة فودافون كاش. اكتب سبب التأكيد اليدوي.', 400, 'REASON_REQUIRED');
+    if (p.status === 'REVIEW_EXPIRED' && reason.length < 3) throw new PaymentError('انتهت مهلة المراجعة لهذه الدفعة. اكتب سبب التأكيد.', 400, 'REASON_REQUIRED');
     if (Number(p.amount_minor) !== Number(p.total_minor)) throw new PaymentError('مبلغ الدفعة لا يطابق إجمالي الطلب', 409, 'AMOUNT_MISMATCH');
     if (p.order_status === 'CANCELLED') throw new PaymentError('لا يمكن تأكيد دفع طلب ملغى', 409, 'ORDER_CANCELLED');
-    const row = await transition(c, p, 'PAID', { type: 'STAFF', id: input.staffId }, reason || 'ACCOUNTANT_CONFIRMED', { fromAutoVerified: p.status === 'AUTO_VERIFIED' }, { verified_at: new Date(), paid_at: new Date(), recorded_by_staff_id: input.staffId });
+    const row = await transition(c, p, 'PAID', { type: 'STAFF', id: input.staffId }, reason || (p.status === 'AUTO_VERIFIED' ? 'ACCOUNTANT_CONFIRMED' : 'ACCOUNTANT_CONFIRMED_WITHOUT_SMS'), { fromAutoVerified: p.status === 'AUTO_VERIFIED', smsMatched: p.status === 'AUTO_VERIFIED' }, { verified_at: new Date(), paid_at: new Date(), recorded_by_staff_id: input.staffId });
     await markOrderPaid(c, row);
     plog('PAYMENT_CONFIRMED', { paymentId: p.id, staffId: input.staffId, manual: p.status !== 'AUTO_VERIFIED' });
     return row;
@@ -310,7 +336,8 @@ export async function paymentSweep(pool: Pool) {
     });
   };
   await run(`SELECT * FROM payments WHERE status='AWAITING_TRANSFER' AND expires_at<now()`, [], 'EXPIRED', 'TRANSFER_WINDOW_PASSED');
-  await run(`SELECT * FROM payments WHERE status='PENDING_VERIFICATION' AND expires_at<now()-make_interval(hours=>$1)`, [cfg.reviewHours], 'EXPIRED', 'NO_MATCHING_SMS');
+  await run(`SELECT * FROM payments WHERE status='PENDING_VERIFICATION' AND provisional_activation AND review_expires_at<now()`, [], 'REVIEW_EXPIRED', 'ACCOUNTANT_REVIEW_WINDOW_PASSED', (c, row) => afterLoss(c, row, 'PAYMENT_REVIEW'));
+  await run(`SELECT * FROM payments WHERE status='PENDING_VERIFICATION' AND NOT provisional_activation AND expires_at<now()-make_interval(hours=>$1)`, [cfg.reviewHours], 'EXPIRED', 'NO_MATCHING_SMS');
   await run(`SELECT * FROM payments WHERE status='AUTO_VERIFIED' AND review_expires_at<now()`, [], 'REVIEW_EXPIRED', 'ACCOUNTANT_REVIEW_WINDOW_PASSED', (c, row) => afterLoss(c, row, 'PAYMENT_REVIEW'));
   await run(`SELECT * FROM payments WHERE provider='KASHIER' AND status IN ('CREATED','CHECKOUT_STARTED') AND expires_at<now()`, [], 'EXPIRED', 'CHECKOUT_ABANDONED');
   return n;
@@ -362,7 +389,7 @@ export async function handleKashierWebhook(pool: Pool, input: { body: any; signa
 /* ─────────────── read models ─────────────── */
 export function publicPayment(p: any) {
   // Customer-safe: no raw SMS, no screenshot path, no match internals.
-  return { id: p.id, orderId: p.order_id, provider: p.provider, method: p.method, status: p.status, amountMinor: Number(p.amount_minor), currency: p.currency, receivingWallet: p.provider === 'MANUAL_WALLET' ? p.receiving_wallet : undefined, customerWallet: p.customer_wallet || null, hasScreenshot: Boolean(p.screenshot_path), expiresAt: p.expires_at, reviewExpiresAt: p.review_expires_at, verifiedAt: p.verified_at, createdAt: p.created_at };
+  return { id: p.id, orderId: p.order_id, provider: p.provider, method: p.method, status: p.status, amountMinor: Number(p.amount_minor), currency: p.currency, receivingWallet: p.provider === 'MANUAL_WALLET' ? p.receiving_wallet : undefined, customerWallet: p.customer_wallet || null, hasScreenshot: Boolean(p.screenshot_path), provisionalActivation: Boolean(p.provisional_activation), expiresAt: p.expires_at, reviewExpiresAt: p.review_expires_at, verifiedAt: p.verified_at, createdAt: p.created_at };
 }
 export async function getCustomerPayment(pool: Pool, paymentId: string, customerId: string) {
   const p = (await pool.query(`SELECT p.*,o.public_code order_code FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1 AND o.customer_id=$2`, [paymentId, customerId])).rows[0];

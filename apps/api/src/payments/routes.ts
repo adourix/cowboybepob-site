@@ -41,7 +41,7 @@ export function registerAdminPaymentRoutes(admin: FastifyInstance, d: Deps) {
     d.requirePermission(req, 'payments:read');
     const f = String(req.query?.filter || 'all').toLowerCase();
     const where: Record<string, string> = {
-      all: 'true', pending: `p.status IN ('AWAITING_TRANSFER','PENDING_VERIFICATION','CREATED','CHECKOUT_STARTED','PROCESSING')`, auto_verified: `p.status='AUTO_VERIFIED'`, paid: `p.status='PAID'`,
+      all: 'true', review: `p.status IN ('AUTO_VERIFIED','PENDING_VERIFICATION','REVIEW_EXPIRED')`, pending: `p.status IN ('AWAITING_TRANSFER','PENDING_VERIFICATION','CREATED','CHECKOUT_STARTED','PROCESSING')`, auto_verified: `p.status='AUTO_VERIFIED'`, paid: `p.status='PAID'`,
       rejected: `p.status IN ('REJECTED','FAILED','CANCELLED')`, expired: `p.status IN ('EXPIRED','REVIEW_EXPIRED')`, kashier: `p.provider='KASHIER'`, vodafone_cash: `p.method='VODAFONE_CASH'`, orange_cash: `p.method='ORANGE_CASH'`, card: `p.method='CARD'`, apple_pay: `p.method='APPLE_PAY'`,
     };
     if (!where[f]) throw new PaymentError('Unknown filter', 400, 'BAD_FILTER');

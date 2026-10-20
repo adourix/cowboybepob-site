@@ -230,6 +230,38 @@ async function main() {
   ok('Orange SMS cannot verify a Vodafone Cash payment (different receiving wallet)', cross.body.status === 'UNMATCHED' && (await q(`SELECT status FROM payments WHERE id=$1`, [vp])).rows[0].status === 'PENDING_VERIFICATION', JSON.stringify(cross.body));
   ok('provider renamed to MANUAL_WALLET', (await q(`SELECT provider FROM payments WHERE id=$1`, [op])).rows[0].provider === 'MANUAL_WALLET');
 
+  console.log('ACTIVATE ON PROOF (24h until the accountant reviews)');
+  const newCustomer = async () => { const em = `proof-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`; const id = (await q(`INSERT INTO customers(full_name,email,password_hash,mobile_phone,status,email_verified_at) VALUES('Proof',$1,$2,'+201211111111','ACTIVE',now()) RETURNING id`, [em, hash])).rows[0].id; const cl = new Client(); await cl.req('POST', '/api/v1/auth/login', { email: em, password: 'Passw0rd!', kind: 'customer' }); return { id, cl }; };
+  const payWithProof = async (C, amt) => { const o = await order(C.id, amt); const pid = (await C.cl.req('POST', `/api/v1/customer/orders/${o.id}/payments`, { method: 'VODAFONE_CASH' })).body.payment.id; const r = await C.cl.req('POST', `/api/v1/customer/payments/${pid}/manual-proof`, { senderWallet: '01211111111', screenshot: { mime: 'image/png', data: PNG } }); return { o, pid, r }; };
+  const prow = pid => q(`SELECT p.status,p.provisional_activation,p.review_expires_at,o.status ostatus FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1`, [pid]).then(x => x.rows[0]);
+  const addService = async (itemId, cid) => (await q(`INSERT INTO services(customer_id,category_id,plan_id,status,origin_order_item_id) SELECT $1,p.category_id,p.id,'ACTIVE',$2 FROM config_plans p LIMIT 1 RETURNING id`, [cid, itemId])).rows[0].id;
+  const svcStatus = id => q(`SELECT status FROM services WHERE id=$1`, [id]).then(x => x.rows[0].status);
+  const A = await newCustomer();
+  const a1 = await payWithProof(A, 4000); const ar = await prow(a1.pid);
+  ok('customer finishes paying (no SMS) → config activated, order PAID', ar.status === 'PENDING_VERIFICATION' && ar.provisional_activation === true && ar.ostatus === 'PAID' && a1.r.body.provisionalActivation === true, JSON.stringify(ar));
+  const hrs = (new Date(ar.review_expires_at).getTime() - Date.now()) / 3600000;
+  ok('review deadline is ~24h from payment', hrs > 23.5 && hrs <= 24.01, `hours=${hrs}`);
+  ok('fulfilment job queued', Number((await q(`SELECT count(*) n FROM jobs WHERE subject_id=$1 AND type='fulfill_order'`, [a1.o.id])).rows[0].n) === 1);
+  const a2 = await payWithProof(A, 4100); const ar2 = await prow(a2.pid);
+  ok('second payment while the first is under review → waits for accountant', ar2.provisional_activation === false && ar2.ostatus === 'PENDING_PAYMENT', JSON.stringify(ar2));
+  const cf = await admin.req('POST', `/api/v1/admin/payments/${a1.pid}/confirm`, {});
+  ok('accountant confirms after checking the wallet (no SMS, no note needed) → PAID', cf.status === 200 && cf.body.status === 'PAID', JSON.stringify(cf.body));
+  ok('review list shows payments waiting for the accountant', (await admin.req('GET', '/api/v1/admin/payments?filter=review')).body.some(x => x.id === a2.pid));
+  const B = await newCustomer();
+  const b1 = await payWithProof(B, 4200); const bs = await addService(b1.o.itemId, B.id);
+  await q(`UPDATE payments SET review_expires_at=now()-interval '1 minute' WHERE id=$1`, [b1.pid]); await paymentSweep(pool);
+  ok('no review within 24h → REVIEW_EXPIRED and config suspended', (await prow(b1.pid)).status === 'REVIEW_EXPIRED' && await svcStatus(bs) === 'SUSPENDED');
+  const b2 = await payWithProof(B, 4300);
+  ok('customer with an expired review → next payment is NOT activated early', (await prow(b2.pid)).provisional_activation === false);
+  const Cc = await newCustomer();
+  const cc1 = await payWithProof(Cc, 4400); const cs = await addService(cc1.o.itemId, Cc.id);
+  const rj = await admin.req('POST', `/api/v1/admin/payments/${cc1.pid}/reject`, { reason: 'لم يصل التحويل' });
+  ok('accountant rejects → config suspended', rj.body.status === 'REJECTED' && await svcStatus(cs) === 'SUSPENDED');
+  const Rr = await newCustomer();
+  const ro2 = await order(Rr.id, 2500, true); const rp2 = (await Rr.cl.req('POST', `/api/v1/customer/orders/${ro2.id}/payments`, { method: 'VODAFONE_CASH' })).body.payment.id;
+  await Rr.cl.req('POST', `/api/v1/customer/payments/${rp2}/manual-proof`, { senderWallet: '01211111111', screenshot: { mime: 'image/png', data: PNG } });
+  ok('router order is never activated/shipped on proof', (await prow(rp2)).provisional_activation === false && (await prow(rp2)).ostatus === 'PENDING_PAYMENT');
+
   console.log('SECURITY');
   ok('34. invalid device token rejected', (await sendSms(sms('1.00', '01275555667').text, 'x'.repeat(40))).status === 401);
   await admin.req('PATCH', `/api/v1/admin/payment-devices/${dev.body.device.id}`, { enabled: false });

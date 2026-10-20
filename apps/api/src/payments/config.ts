@@ -14,6 +14,10 @@ export function paymentConfig() {
     paymentWindowMinutes: positiveInt(env.PAYMENT_WINDOW_MINUTES, 30),
     smsClockSkewMinutes: positiveInt(env.PAYMENT_SMS_CLOCK_SKEW_MINUTES, 10),
     provisionalActivation: env.PAYMENT_PROVISIONAL_ACTIVATION !== 'false',
+    // Activate as soon as the customer submits wallet + receipt (before any SMS), for the review window.
+    activateOnProof: env.PAYMENT_ACTIVATE_ON_PROOF !== 'false',
+    // Customers with a rejected/expired-review wallet payment in this many days wait for the accountant instead.
+    proofActivationBlockDays: positiveInt(env.PAYMENT_PROOF_ACTIVATION_BLOCK_DAYS, 30),
     vodafoneWallets, orangeWallets,
     receivingWallets: [...vodafoneWallets, ...orangeWallets], // any SMS must be for one of OUR wallets
     uploadDir: env.PAYMENT_UPLOAD_DIR || 'storage/payment-screenshots',

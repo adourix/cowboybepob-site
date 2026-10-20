@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Check, Copy, Eye, MessageSquareText, Plus, RefreshCw, Smartphone, X } from 'lucide-react';
 import { api, date, money } from '../lib/api';
 
-const FILTERS: [string, string][] = [['all', 'الكل'], ['auto_verified', 'تحقق تلقائي'], ['pending', 'قيد الانتظار'], ['paid', 'مدفوع'], ['rejected', 'مرفوض/فشل'], ['expired', 'منتهي'], ['vodafone_cash', 'فودافون كاش'], ['orange_cash', 'أورنج كاش'], ['kashier', 'Kashier'], ['card', 'بطاقة'], ['apple_pay', 'Apple Pay']];
+const FILTERS: [string, string][] = [['review', 'يحتاج مراجعة'], ['all', 'الكل'], ['auto_verified', 'تحقق تلقائي'], ['pending', 'قيد الانتظار'], ['paid', 'مدفوع'], ['rejected', 'مرفوض/فشل'], ['expired', 'منتهي'], ['vodafone_cash', 'فودافون كاش'], ['orange_cash', 'أورنج كاش'], ['kashier', 'Kashier'], ['card', 'بطاقة'], ['apple_pay', 'Apple Pay']];
 const ST: Record<string, [string, string]> = {
   AWAITING_TRANSFER: ['بانتظار التحويل', 'warn'], PENDING_VERIFICATION: ['بانتظار رسالة SMS', 'warn'], AUTO_VERIFIED: ['تحقق تلقائي — يحتاج مراجعة', 'warn'], PAID: ['مدفوع', 'ok'],
   REJECTED: ['مرفوض', 'bad'], EXPIRED: ['منتهي', 'idle'], REVIEW_EXPIRED: ['انتهت مهلة المراجعة', 'bad'], CREATED: ['جديد', 'idle'], CHECKOUT_STARTED: ['في صفحة الدفع', 'warn'], PROCESSING: ['قيد المعالجة', 'warn'], FAILED: ['فشل', 'bad'], CANCELLED: ['ملغى', 'idle'],
@@ -26,7 +26,7 @@ export function PaymentsAdmin() {
 }
 
 function PaymentsTable() {
-  const [filter, setFilter] = useState('auto_verified'); const [rows, setRows] = useState<any[]>([]); const [err, setErr] = useState(''); const [loading, setLoading] = useState(false); const [open, setOpen] = useState<string | null>(null);
+  const [filter, setFilter] = useState('review'); const [rows, setRows] = useState<any[]>([]); const [err, setErr] = useState(''); const [loading, setLoading] = useState(false); const [open, setOpen] = useState<string | null>(null);
   const load = () => { setLoading(true); setErr(''); api<any[]>(`/api/v1/admin/payments?filter=${filter}`).then(setRows).catch(e => setErr(e.message)).finally(() => setLoading(false)); };
   useEffect(load, [filter]);
   return <section className="panel table-panel">
@@ -37,8 +37,8 @@ function PaymentsTable() {
       <tbody>{rows.map(p => <tr key={p.id}>
         <td><button className="btn btn-ghost btn-sm review-btn" onClick={() => setOpen(p.id)}><Eye size={14} /> فتح</button></td>
         <td><span className="code-tag">{p.order_code}</span></td><td>{p.customer_name}</td><td className="num">{money(p.amount_minor)}</td>
-        <td><S v={p.status} />{p.provisional_activation && p.status === 'AUTO_VERIFIED' && <small className="muted d-block">الخدمة مفعّلة مؤقتًا</small>}</td>
-        <td className="muted">{p.status === 'AUTO_VERIFIED' ? left(p.review_expires_at) : ['AWAITING_TRANSFER', 'PENDING_VERIFICATION', 'CHECKOUT_STARTED'].includes(p.status) ? left(p.expires_at) : ''}</td>
+        <td><S v={p.status} />{p.provisional_activation && ['AUTO_VERIFIED', 'PENDING_VERIFICATION'].includes(p.status) && <small className="live-tag d-block">الكونفيج مفعّل مؤقتًا</small>}</td>
+        <td className={p.provisional_activation ? 'deadline' : 'muted'}>{p.provisional_activation && ['AUTO_VERIFIED', 'PENDING_VERIFICATION'].includes(p.status) ? `يتوقف بعد ${left(p.review_expires_at)}` : p.status === 'AUTO_VERIFIED' ? left(p.review_expires_at) : ['AWAITING_TRANSFER', 'PENDING_VERIFICATION', 'CHECKOUT_STARTED'].includes(p.status) ? left(p.expires_at) : ''}</td>
         <td>{METHOD[p.method] || p.method}{p.provider === 'KASHIER' && <small className="muted"> · Kashier</small>}</td>
         <td dir="ltr" className="mono-ish">{p.provider === 'KASHIER' ? (p.provider_reference || '—') : (p.customer_wallet || '—')}</td>
         <td dir="ltr" className="mono-ish">{p.provider === 'KASHIER' ? (p.webhook_status || p.provider_status || '—') : (p.receiving_wallet || '—')}</td>
@@ -83,7 +83,8 @@ function PaymentDetail({ id, onClose, onChanged }: { id: string; onClose: () => 
       <details className="pd-log" open><summary>سجل التغييرات</summary>{p.audit.map((a: any, i: number) => <div key={i}><span className="muted">{date(a.created_at)}</span> · {a.actor_type} · {a.previous_status || '∅'} → <b>{a.new_status}</b>{a.reason ? ` — ${a.reason}` : ''}</div>)}</details>
       {p.provider !== 'KASHIER' && ['PENDING_VERIFICATION', 'AWAITING_TRANSFER'].includes(p.status) && <details className="pd-log"><summary>وصلت رسالة التحويل على هاتف المحفظة؟ الصقها هنا</summary><PasteSms compact onDone={onChanged} /></details>}
       {canAct && <div className="pd-actions">
-        <label className="field"><span>{p.status === 'AUTO_VERIFIED' ? 'ملاحظة (اختياري للتأكيد، مطلوب للرفض)' : 'سبب القرار (مطلوب: لم تُطابق رسالة SMS تلقائيًا)'}</span><input value={reason} onChange={e => setReason(e.target.value)} placeholder="مثال: تم التأكد من رصيد المحفظة" /></label>
+        {p.status === 'PENDING_VERIFICATION' && <p className="muted">لم تصل رسالة SMS لهذا التحويل. افتح تطبيق المحفظة وتأكد من وصول {money(p.amount_minor)} من <span dir="ltr">{p.customer_wallet}</span> قبل التأكيد.</p>}
+        <label className="field"><span>{p.status === 'REVIEW_EXPIRED' ? 'سبب التأكيد (مطلوب: انتهت مهلة المراجعة)' : 'ملاحظة (اختياري للتأكيد، مطلوب للرفض)'}</span><input value={reason} onChange={e => setReason(e.target.value)} placeholder="مثال: تم التأكد من رصيد المحفظة" /></label>
         {err && <div className="alert error">{err}</div>}
         <div className="row-actions"><button className="btn btn-signal" disabled={busy} onClick={() => act('confirm')}><Check size={16} /> تأكيد الدفع</button><button className="btn btn-danger" disabled={busy} onClick={() => act('reject')}><X size={16} /> رفض</button></div>
       </div>}
