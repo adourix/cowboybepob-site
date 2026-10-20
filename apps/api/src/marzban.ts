@@ -189,7 +189,7 @@ export class MarzbanProvider {
   async createOrUpdate(input: any): Promise<MarzbanUser> {
     const existing = await this.getUser(input.username);
     const expire = Math.floor(new Date(input.expireAt).getTime() / 1000);
-    if (existing && Number.isFinite(expire) && Number(existing.expire || 0) < expire && !this.resetUsers.has(input.username)) {
+    if (existing && Number.isFinite(expire) && Number(existing.expire || 0) !== expire && !this.resetUsers.has(input.username)) {
       await this.resetUserDataUsage(input.username);
     }
     const payload = { username: input.username, proxies: { [input.protocol]: { id: input.uuid, flow: input.flow || '' } }, inbounds: { [input.protocol]: [input.inbound] }, expire, data_limit: Number(input.quotaBytes || 0) };
