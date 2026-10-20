@@ -6,6 +6,7 @@ import { AccountLayout, localMobile, usePortal } from '../Portal';
 import { compareCreatedAtThenId, customerStatus, usagePercent } from '../selection';
 import { Banner, Bar, Empty, Hud, Modal, Pill, useToast } from '../ui';
 import { statusTone } from '../serviceActions';
+import { PAY_STATUS } from '../PaymentFlow';
 
 function Shell({ title, sub, action, children }: { title: string; sub: string; action?: React.ReactNode; children: React.ReactNode }) {
   const { user } = usePortal();
@@ -120,10 +121,10 @@ export function DevicesPage() {
 export function PaymentsPage() {
   const toast = useToast(); const [rows, setRows] = useState<any[] | null>(null);
   React.useEffect(() => { void api<any[]>('/api/v1/customer/payments').then(setRows).catch(e => { toast.bad(e.message); setRows([]); }); }, []);
-  const st: Record<string, [string, 'ok' | 'warn' | 'bad' | 'idle']> = { SUCCEEDED: ['مؤكد', 'ok'], INITIATED: ['بانتظار التأكيد', 'warn'], PENDING: ['بانتظار التأكيد', 'warn'], FAILED: ['مرفوض', 'bad'], CANCELLED: ['ملغى', 'idle'] };
+  const st: Record<string, [string, 'ok' | 'warn' | 'bad' | 'idle']> = Object.fromEntries(Object.entries(PAY_STATUS).map(([k, [t, tone]]) => [k, [t, tone === 'info' ? 'warn' : tone]])) as any;
   return <Shell title="المدفوعات" sub="طريقة الدفع الحالية وسجل مدفوعاتك.">
     {toast.node}
-    <Hud className="pay-method"><h2 className="sub-h">طريقة الدفع</h2><p>الدفع حاليًا بالتحويل (محفظة أو InstaPay). بعد التحويل يؤكد فريقنا الدفع يدويًا، ثم يبدأ تجهيز طلبك تلقائيًا. لا نحفظ أي بيانات بطاقات.</p></Hud>
+    <Hud className="pay-method"><h2 className="sub-h">طريقة الدفع</h2><p>فودافون كاش متاح لكل الطلبات: حوّل المبلغ وأرسل رقم محفظتك وصورة الإيصال، ونتحقق تلقائيًا من رسالة التحويل ثم يراجعها المحاسب. البطاقات و Apple Pay متاحة للطلبات من 75 جنيه عبر Kashier، ولا نخزن أي بيانات بطاقات لدينا.</p></Hud>
     <Hud>{rows === null ? <p className="cx-muted">جارٍ التحميل…</p> : rows.length ? <table className="cx-table"><thead><tr><th>الطلب</th><th>المبلغ</th><th>الحالة</th><th>التاريخ</th></tr></thead><tbody>
       {rows.map(p => <tr key={p.id}><td dir="ltr">{p.order_code}</td><td>{money(p.amount_minor, p.currency)}</td><td><Pill tone={(st[p.status] || ['', 'idle'])[1]}>{(st[p.status] || [p.status])[0]}</Pill></td><td>{dateOnly(p.paid_at || p.created_at)}</td></tr>)}
     </tbody></table> : <Empty title="لا توجد مدفوعات بعد" />}</Hud>

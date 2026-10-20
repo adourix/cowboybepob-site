@@ -5,6 +5,7 @@ import { gb, money, moneyNum, num } from '../../lib/api';
 import { usePortal } from '../Portal';
 import { Banner, Empty, Hud, useToast } from '../ui';
 import { LandlinePicker, placeOrder } from '../checkout';
+import { PaymentFlow } from '../PaymentFlow';
 
 type Plan = { id: string; name: string; durationDays: number; priceMinor: number; currency: string; quotaBytes: number | null; quotaPricingMode?: string; quotaPricePerGbMinor?: number | null; minQuotaGb?: number | null; maxQuotaGb?: number | null; quotaStepGb?: number | null; category: string; protocol: string; description?: string | null };
 const perGb = (p: Plan) => p.quotaPricingMode === 'PER_GB';
@@ -15,7 +16,7 @@ export function ServicesShop() {
   const { categories, refresh } = usePortal(); const toast = useToast(); const nav = useNavigate(); const [params] = useSearchParams();
   const plans: Plan[] = useMemo(() => categories.flatMap((c: any) => (c.plans || []).map((p: any) => ({ ...p, category: c.name, protocol: c.protocol, description: c.description }))), [categories]);
   const [q, setQ] = useState(''); const [proto, setProto] = useState(''); const [dur, setDur] = useState(''); const [sort, setSort] = useState('default');
-  const [sel, setSel] = useState<Plan | null>(null); const [qty, setQty] = useState(0); const [landline, setLandline] = useState(''); const [busy, setBusy] = useState(false);
+  const [sel, setSel] = useState<Plan | null>(null); const [qty, setQty] = useState(0); const [landline, setLandline] = useState(''); const [busy, setBusy] = useState(false); const [payOrder, setPayOrder] = useState<string | null>(null);
   useEffect(() => { if (!plans.length) return; const pre = plans.find(p => p.id === params.get('plan')); const pick = pre || plans.find(perGb) || plans[0]; setSel(s => s ?? pick); }, [plans]);
   useEffect(() => { if (sel) setQty(defaultGb(sel)); }, [sel?.id]);
   const protos = Array.from(new Set(plans.map(p => p.protocol))); const durs = Array.from(new Set(plans.map(p => p.durationDays))).sort((a, b) => a - b);
@@ -27,7 +28,7 @@ export function ServicesShop() {
   const buy = async () => {
     if (!sel) return; if (!landline) { toast.bad('اختر رقمًا أرضيًا أولًا.'); return; }
     setBusy(true);
-    try { const o = await placeOrder([{ type: 'CONFIG_NEW', planId: sel.id, landlineId: landline, quotaGb: perGb(sel) ? qty : undefined }]); toast.ok(`تم إنشاء الطلب ${o.public_code}. سيُفعّل بعد تأكيد الدفع.`); await refresh(); window.setTimeout(() => nav('/customer/orders'), 1200); }
+    try { const o = await placeOrder([{ type: 'CONFIG_NEW', planId: sel.id, landlineId: landline, quotaGb: perGb(sel) ? qty : undefined }]); await refresh(); setPayOrder(o.id); }
     catch (e: any) { toast.bad(e.message); } finally { setBusy(false); }
   };
   const popular = useMemo(() => { const fixed = plans.filter(p => !perGb(p)); return fixed.length > 2 ? fixed[Math.floor(fixed.length / 2) - 1]?.id : fixed[0]?.id; }, [plans]);
@@ -89,9 +90,10 @@ export function ServicesShop() {
           </div>
           <LandlinePicker value={landline} onChange={setLandline} />
           <button className="cx-btn gold big block" onClick={buy} disabled={busy || !landline}><ShoppingCart size={20} />{busy ? 'جارٍ إنشاء الطلب…' : 'شراء الخدمة الآن'}</button>
-          <small className="co-note">الدفع بالتحويل، ويؤكده فريقنا يدويًا قبل التفعيل.</small>
+          <small className="co-note">فودافون كاش لكل الطلبات، والبطاقة و Apple Pay للطلبات من 75 جنيه.</small>
         </Hud> : <Hud><Empty title="اختر باقة" text="اضغط «اختر الخدمة» على أي باقة لعرض التفاصيل هنا." /></Hud>}
       </aside>
     </div>
+    {payOrder && <PaymentFlow orderId={payOrder} onClose={() => { setPayOrder(null); nav('/customer/orders'); }} onDone={() => void refresh()} />}
   </div>;
 }

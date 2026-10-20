@@ -3,8 +3,15 @@ import { NavLink, useNavigate, useSearchParams } from 'react-router-dom';
 import { Eye, EyeOff, Lock, LogIn, Mail, Phone, ShieldCheck, User as UserIcon, UserPlus } from 'lucide-react';
 import { api, User } from '../lib/api';
 
-function Stage({ children }: { children: React.ReactNode }) {
-  return <div className="cx-auth">
+type Theme = 'default' | 'red' | 'blue';
+const POSTER: Record<Theme, { art: string; title: string; sub: string; quote: string }> = {
+  default: { art: '/bebop/spike-panel.webp', title: 'إنترنت بلا حدود', sub: 'خدمات موثوقة .. أينما كنت', quote: '' },
+  red: { art: '/bebop/email-verify.webp', title: 'أهلًا بك على المتن', sub: 'خطوة واحدة وتنطلق', quote: 'SEE YOU SPACE COWBOY …' },
+  blue: { art: '/bebop/email-reset.webp', title: 'نعيدك إلى المسار', sub: 'كلمة مرور جديدة في دقيقة', quote: 'WHATEVER HAPPENS, HAPPENS …' },
+};
+function Stage({ children, theme = 'default' }: { children: React.ReactNode; theme?: Theme }) {
+  const t = POSTER[theme];
+  return <div className={`cx-auth theme-${theme}`}>
     <img className="cx-auth-bg" src="/bebop/login-bg.webp" alt="" />
     <div className="cx-auth-stage">
       <aside className="cx-auth-poster" aria-hidden>
@@ -13,9 +20,10 @@ function Stage({ children }: { children: React.ReactNode }) {
           <b>CowboyBepob</b>
           <small className="en">INTERNET BEYOND BORDERS</small>
           <i className="rule" />
-          <h2>إنترنت بلا حدود</h2>
-          <p>خدمات موثوقة .. أينما كنت</p>
-          <img className="poster-art" src="/bebop/spike-panel.webp" alt="" />
+          <h2>{t.title}</h2>
+          <p>{t.sub}</p>
+          <img className={`poster-art ${theme !== 'default' ? 'wide' : ''}`} src={t.art} alt="" />
+          {t.quote && <span className="poster-quote en">{t.quote}</span>}
         </div>
       </aside>
       <div className="cx-auth-card hud hud-cyan"><div className="hud-in">{children}</div></div>
@@ -42,7 +50,7 @@ export function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
     if (!id.includes('@')) { setError('اكتب بريدك الإلكتروني لإرسال رابط إعادة التعيين.'); return; }
     try { const r = await api<any>('/api/v1/customer/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email: id.trim() }) }); setInfo(r.message); } catch (e: any) { setError(e.message); }
   };
-  return <Stage>
+  return <Stage theme={forgot ? 'blue' : 'default'}>
     <h1 className="auth-title">{forgot ? 'استعادة كلمة المرور' : 'مرحبًا بعودتك'}</h1>
     <p className="auth-sub">{forgot ? 'سنرسل رابط إعادة التعيين إلى بريدك.' : 'سجّل الدخول إلى حسابك للاستمتاع بخدماتنا'}</p>
     {!forgot && <div className="role-tabs" role="tablist">
@@ -78,7 +86,7 @@ export function RegisterScreen() {
     try { const r = await api<any>('/api/v1/customer/auth/register', { method: 'POST', body: JSON.stringify({ firstName: v.firstName, lastName: v.lastName, email: v.email.trim(), password: v.password, mobilePhone: v.mobilePhone, landline: v.landline || undefined }) }); setDone(r.email); }
     catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
-  if (done) return <Stage><h1 className="auth-title">تحقق من بريدك</h1><p className="auth-sub">أرسلنا رابط التفعيل إلى <b dir="ltr">{done}</b>. افتح الرابط لتفعيل حسابك ثم سجّل الدخول.</p><NavLink to="/login" className="cx-btn gold big block">العودة لتسجيل الدخول</NavLink></Stage>;
+  if (done) return <Stage theme="red"><h1 className="auth-title">تحقق من <span className="accent">بريدك</span></h1><p className="auth-sub">أرسلنا رابط التفعيل إلى <b dir="ltr">{done}</b>. افتح الرابط لتفعيل حسابك ثم سجّل الدخول.</p><NavLink to="/login" className="cx-btn gold big block">العودة لتسجيل الدخول</NavLink></Stage>;
   return <Stage>
     <h1 className="auth-title">إنشاء حساب جديد</h1>
     <p className="auth-sub">انضم إلينا واستمتع بخدماتنا الموثوقة أينما كنت</p>
@@ -103,13 +111,13 @@ export function RegisterScreen() {
 export function VerifyEmailScreen() {
   const [params] = useSearchParams(); const [state, setState] = useState<'busy' | 'ok' | 'bad'>('busy'); const [msg, setMsg] = useState('');
   useEffect(() => { const t = params.get('token'); if (!t) { setState('bad'); setMsg('الرابط غير مكتمل.'); return; } void api<any>(`/api/v1/customer/auth/verify-email?token=${encodeURIComponent(t)}`).then(r => { setState('ok'); setMsg(r.message); }).catch(e => { setState('bad'); setMsg(e.message === 'Invalid or expired token' ? 'الرابط غير صالح أو انتهت صلاحيته. اطلب رابطًا جديدًا.' : e.message); }); }, []);
-  return <Stage><h1 className="auth-title">تفعيل الحساب</h1><p className="auth-sub">{state === 'busy' ? 'جارٍ التحقق من الرابط…' : msg}</p>{state !== 'busy' && <NavLink to="/login" className="cx-btn gold big block">تسجيل الدخول</NavLink>}</Stage>;
+  return <Stage theme="red"><h1 className="auth-title">تأكيد <span className="accent">البريد الإلكتروني</span></h1><p className="auth-sub">{state === 'busy' ? 'جارٍ التحقق من الرابط…' : msg}</p>{state !== 'busy' && <NavLink to="/login" className="cx-btn gold big block">تسجيل الدخول</NavLink>}</Stage>;
 }
 
 export function ResetPasswordScreen() {
   const [params] = useSearchParams(); const nav = useNavigate(); const [p, setP] = useState(''); const [c, setC] = useState(''); const [err, setErr] = useState(''); const [ok, setOk] = useState(false);
   const submit = async (e: FormEvent) => { e.preventDefault(); setErr(''); if (p !== c) { setErr('تأكيد كلمة المرور لا يطابق.'); return; } try { await api('/api/v1/customer/auth/reset-password', { method: 'POST', body: JSON.stringify({ token: params.get('token'), password: p }) }); setOk(true); window.setTimeout(() => nav('/login'), 1800); } catch (x: any) { setErr(x.message === 'Invalid or expired token' ? 'الرابط غير صالح أو انتهت صلاحيته.' : x.message); } };
-  return <Stage><h1 className="auth-title">كلمة مرور جديدة</h1>
+  return <Stage theme="blue"><h1 className="auth-title">إعادة تعيين <span className="accent">كلمة المرور</span></h1>
     {ok ? <p className="auth-sub">تم تغيير كلمة المرور. جارٍ تحويلك لتسجيل الدخول…</p> : <form className="auth-form" onSubmit={submit}>
       <Pwd value={p} onChange={setP} placeholder="كلمة المرور الجديدة" autoComplete="new-password" />
       <Pwd value={c} onChange={setC} placeholder="تأكيد كلمة المرور" autoComplete="new-password" />

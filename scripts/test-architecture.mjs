@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 
 const read = (p) => readFile(p, 'utf8');
 const schema = await read('db/schema.sql');
-const api = await read('apps/api/src/main.ts');
+const api = (await read('apps/api/src/main.ts')) + (await read('apps/api/src/payments/routes.ts'));
 const worker = await read('apps/api/src/worker-v2.ts');
 const workerPackage = JSON.parse(await read('apps/api/package.json'));
 const endpointSync = await read('apps/api/src/endpointSync.ts');
@@ -73,6 +73,8 @@ contains(web, '/admin/services', 'admin services page missing');
 contains(web, '/admin/routers', 'admin routers page missing');
 contains(web, '/admin/servers', 'admin servers page missing');
 contains(css, 'grid-template-columns:272px', 'desktop admin sidebar layout regression detected');
+contains(api, "'/api/v1/payments/webhooks/kashier'", 'Kashier webhook route missing');
+contains(api, "'/api/v1/payments/sms'", 'Android SMS route missing');
 contains(portal, "'/customer/services'", 'customer services shop route missing');
 contains(portal, "'/customer/orders'", 'customer orders route missing');
 contains(selection, 'export function selectPrimaryService', 'primary service selection helper missing');

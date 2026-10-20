@@ -1,0 +1,205 @@
+// End-to-end payment tests against a running API + database.
+// Usage: API_URL=http://127.0.0.1:5002 DATABASE_URL=... KASHIER_API_KEY=... KASHIER_MERCHANT_ID=... node scripts/test-payments-e2e.mjs
+// Requires the API started with VODAFONE_CASH_RECEIVING_WALLET=01044577552 and the same Kashier credentials.
+import pg from 'pg';
+import crypto from 'node:crypto';
+import argon2 from 'argon2';
+const API = process.env.API_URL || 'http://127.0.0.1:5002';
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const q = (t, v = []) => pool.query(t, v);
+const KEY = process.env.KASHIER_API_KEY, MID = process.env.KASHIER_MERCHANT_ID;
+let pass = 0, fail = 0;
+const ok = (n, cond, info = '') => { if (cond) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ ${n} ${info}`); } };
+
+class Client {
+  constructor() { this.jar = {}; }
+  cookie() { return Object.entries(this.jar).map(([k, v]) => `${k}=${v}`).join('; '); }
+  async req(method, path, body, headers = {}) {
+    const h = { ...headers, cookie: this.cookie() };
+    if (body !== undefined) h['content-type'] = 'application/json';
+    if (this.jar.cb_csrf && method !== 'GET') h['x-csrf-token'] = decodeURIComponent(this.jar.cb_csrf);
+    const r = await fetch(API + path, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) });
+    for (const c of r.headers.getSetCookie?.() || []) { const [kv] = c.split(';'); const [k, ...v] = kv.split('='); this.jar[k] = v.join('='); }
+    const text = await r.text(); let json; try { json = JSON.parse(text); } catch { json = text; }
+    return { status: r.status, body: json, headers: r.headers };
+  }
+}
+const kashierSign = (data, key = KEY) => crypto.createHmac('sha256', key).update([...data.signatureKeys].sort().map(k => `${k}=${encodeURIComponent(data[k] == null ? '' : String(data[k]))}`).join('&')).digest('hex');
+const sms = (amount, sender, minutesAgo = 0, ref = String(Date.now()).slice(-12) + Math.floor(Math.random() * 90 + 10)) => {
+  const d = new Date(Date.now() - minutesAgo * 60000);
+  const cairo = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Cairo', hour: '2-digit', minute: '2-digit', year: '2-digit', month: '2-digit', day: '2-digit', hourCycle: 'h23' }).formatToParts(d).reduce((a, p) => (a[p.type] = p.value, a), {});
+  return { ref, text: `تم استلام مبلغ ${amount} جنيه من ${sender}؛\nالمسجل بإسم TEST USER\nعلى رقم محفظتك 01044577552 بتاريخ ${cairo.hour}:${cairo.minute} ${cairo.year}-${cairo.month}-${cairo.day}.\nرصيدك الحالي: 999.00 جنيه\nرقم العملية: ${ref}\nhttp://vf.eg/vfcash` };
+};
+const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex').toString('base64');
+
+async function order(customerId, totalMinor, withRouter = false) {
+  const o = (await q(`INSERT INTO orders(customer_id,status,subtotal_minor,total_minor,idempotency_key) VALUES($1,'PENDING_PAYMENT',$2,$2,$3) RETURNING id`, [customerId, totalMinor, crypto.randomUUID()])).rows[0];
+  const plan = (await q(`SELECT id FROM config_plans LIMIT 1`)).rows[0];
+  const item = (await q(`INSERT INTO order_items(order_id,item_type,plan_id,name_snapshot,unit_price_minor) VALUES($1,$2,$3,'test',$4) RETURNING id`, [o.id, withRouter ? 'ROUTER' : 'CONFIG_NEW', withRouter ? null : plan.id, totalMinor])).rows[0];
+  return { id: o.id, itemId: item.id };
+}
+
+async function main() {
+  const { paymentSweep } = await import('../apps/api/dist/payments/service.js');
+  // ── fixtures
+  const hash = await argon2.hash('Passw0rd!', { type: argon2.argon2id });
+  const email = `pay-${Date.now()}@example.com`, email2 = `other-${Date.now()}@example.com`;
+  const cust = (await q(`INSERT INTO customers(full_name,email,password_hash,mobile_phone,status,email_verified_at) VALUES('Pay Test',$1,$2,'+201275555667','ACTIVE',now()) RETURNING id`, [email, hash])).rows[0].id;
+  await q(`INSERT INTO customers(full_name,email,password_hash,mobile_phone,status,email_verified_at) VALUES('Other',$1,$2,'+201099999998','ACTIVE',now())`, [email2, hash]);
+  if (!(await q(`SELECT 1 FROM config_plans LIMIT 1`)).rowCount) { const c = (await q(`INSERT INTO config_categories(name,slug,protocol,status) VALUES('T','t-${Date.now()}','vless','ACTIVE') RETURNING id`)).rows[0].id; await q(`INSERT INTO config_plans(category_id,name,duration_days,price_minor) VALUES($1,'T',30,1000)`, [c]); }
+  const me = new Client(); await me.req('POST', '/api/v1/auth/login', { email, password: 'Passw0rd!', kind: 'customer' });
+  const other = new Client(); await other.req('POST', '/api/v1/auth/login', { email: email2, password: 'Passw0rd!', kind: 'customer' });
+  const { authenticator } = await import('otplib');
+  const admin = new Client(); const al = await admin.req('POST', '/api/v1/auth/login', { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD, otp: authenticator.generate(process.env.ADMIN_TOTP_SECRET), kind: 'staff' });
+  if (al.status !== 200) throw new Error('admin login failed ' + JSON.stringify(al.body));
+  const dev = await admin.req('POST', '/api/v1/admin/payment-devices', { name: 'Test phone', deviceKey: `android-${Date.now()}` });
+  const TOKEN = dev.body.token, DEVKEY = dev.body.device.device_key;
+  const sendSms = (text, token = TOKEN, key = DEVKEY) => new Client().req('POST', '/api/v1/payments/sms', { deviceId: key, message: text, receivedAt: new Date().toISOString() }, { authorization: `Bearer ${token}` });
+
+  console.log('GENERAL');
+  const small = await order(cust, 5000);
+  const opt = await me.req('GET', `/api/v1/customer/orders/${small.id}/payment-options`);
+  ok('1. <75 EGP: card/Apple Pay unavailable in options', opt.body.methods.find(m => m.method === 'CARD').available === false && opt.body.methods.find(m => m.method === 'APPLE_PAY').available === false);
+  const bypass = await me.req('POST', `/api/v1/customer/orders/${small.id}/payments`, { method: 'CARD', amountMinor: 999999 });
+  ok('3. <75 EGP: API rejects KASHIER even when called directly', bypass.status === 422, JSON.stringify(bypass.body));
+  const big = await order(cust, 16500);
+  const kc = await me.req('POST', `/api/v1/customer/orders/${big.id}/payments`, { method: 'CARD', amountMinor: 1 });
+  const url = kc.body?.action?.url ? new URL(kc.body.action.url) : null;
+  ok('2. >=75 EGP: Kashier checkout created', kc.status === 200 && kc.body.action.type === 'REDIRECT', JSON.stringify(kc.body));
+  ok('4-5. provider gets the DB amount (165.00), frontend amount ignored', url?.searchParams.get('amount') === '165.00' && url?.searchParams.get('merchantId') === MID);
+  const fake = await me.req('POST', `/api/v1/customer/payments/${kc.body.payment.id}/status`, { status: 'PAID' });
+  const still = (await q(`SELECT status FROM payments WHERE id=$1`, [kc.body.payment.id])).rows[0].status;
+  ok('6/33. customer cannot set PAID (no such route; redirect params ignored)', fake.status === 404 && still === 'CHECKOUT_STARTED');
+
+  console.log('KASHIER WEBHOOK');
+  const pid = kc.body.payment.id;
+  const base = { merchantOrderId: pid, kashierOrderId: 'k-' + pid.slice(0, 8), orderReference: 'TEST-ORD-1', transactionId: 'TX-' + Date.now(), status: 'SUCCESS', method: 'card', amount: '165.00', currency: 'EGP', channel: 'online', transactionResponseCode: '00', signatureKeys: ['amount', 'channel', 'currency', 'kashierOrderId', 'merchantOrderId', 'method', 'orderReference', 'status', 'transactionId', 'transactionResponseCode'] };
+  const hook = (data, sig = kashierSign(data), event = 'pay') => new Client().req('POST', '/api/v1/payments/webhooks/kashier', { event, data }, { 'x-kashier-signature': sig });
+  ok('24/36. invalid signature rejected (401), not paid', (await hook(base, 'deadbeef')).status === 401 && (await q(`SELECT status FROM payments WHERE id=$1`, [pid])).rows[0].status !== 'PAID');
+  const mism = await hook({ ...base, amount: '70.00', transactionId: base.transactionId + 'm' });
+  ok('26. amount mismatch → not PAID', mism.body.result === 'AMOUNT_MISMATCH' && (await q(`SELECT status FROM payments WHERE id=$1`, [pid])).rows[0].status !== 'PAID');
+  const cur = await hook({ ...base, currency: 'USD', transactionId: base.transactionId + 'c' });
+  ok('27. currency mismatch → not PAID', cur.body.result === 'CURRENCY_MISMATCH');
+  const good = await hook(base);
+  const paidRow = (await q(`SELECT p.status,p.method,p.provider_reference,o.status ostatus,o.payment_status FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1`, [pid])).rows[0];
+  ok('23. valid webhook → PAID + order PAID', good.body.result === 'PAID' && paidRow.status === 'PAID' && paidRow.ostatus === 'PAID' && paidRow.payment_status === 'PAID', JSON.stringify(paidRow));
+  ok('30/32. card recorded + provider reference stored', paidRow.method === 'CARD' && paidRow.provider_reference === base.transactionId);
+  const jobs1 = Number((await q(`SELECT count(*) n FROM jobs WHERE subject_id=$1 AND type='fulfill_order'`, [big.id])).rows[0].n);
+  const dup = await hook(base);
+  const jobs2 = Number((await q(`SELECT count(*) n FROM jobs WHERE subject_id=$1 AND type='fulfill_order'`, [big.id])).rows[0].n);
+  ok('25/40. duplicate/replayed webhook is idempotent (no second fulfilment)', dup.body.duplicate === true && jobs1 === 1 && jobs2 === 1);
+  // Apple Pay, failure, cancel on fresh orders
+  const ap = await order(cust, 10000); const apP = (await me.req('POST', `/api/v1/customer/orders/${ap.id}/payments`, { method: 'APPLE_PAY' })).body.payment.id;
+  await hook({ ...base, merchantOrderId: apP, amount: '100.00', method: 'apple_pay', transactionId: 'TX-AP-' + Date.now() });
+  ok('31. Apple Pay recorded as APPLE_PAY', (await q(`SELECT method,status FROM payments WHERE id=$1`, [apP])).rows[0].method === 'APPLE_PAY');
+  const fo = await order(cust, 9000); const foP = (await me.req('POST', `/api/v1/customer/orders/${fo.id}/payments`, { method: 'CARD' })).body.payment.id;
+  await hook({ ...base, merchantOrderId: foP, amount: '90.00', status: 'FAILURE', transactionResponseCode: '05', transactionId: 'TX-F-' + Date.now() });
+  ok('28. failed payment → FAILED', (await q(`SELECT status FROM payments WHERE id=$1`, [foP])).rows[0].status === 'FAILED');
+  const co = await order(cust, 9100); const coP = (await me.req('POST', `/api/v1/customer/orders/${co.id}/payments`, { method: 'CARD' })).body.payment.id;
+  await hook({ ...base, merchantOrderId: coP, amount: '91.00', status: 'SUCCESS', transactionId: 'TX-V-' + Date.now() }, undefined, 'void');
+  ok('29. cancelled (void) → CANCELLED', (await q(`SELECT status FROM payments WHERE id=$1`, [coP])).rows[0].status === 'CANCELLED');
+
+  console.log('VODAFONE CASH');
+  const v1 = await order(cust, 5000);
+  const c1 = await me.req('POST', `/api/v1/customer/orders/${v1.id}/payments`, { method: 'VODAFONE_CASH' });
+  ok('VC instructions show receiving wallet + amount', c1.body.action?.receivingWallet === '01044577552' && c1.body.action.amountMinor === 5000);
+  const dupAttempt = await me.req('POST', `/api/v1/customer/orders/${v1.id}/payments`, { method: 'VODAFONE_CASH' });
+  ok('39. second attempt replaces the open one (only one open per order)', dupAttempt.status === 200 && Number((await q(`SELECT count(*) n FROM payments WHERE order_id=$1 AND status='AWAITING_TRANSFER'`, [v1.id])).rows[0].n) === 1);
+  const p1 = dupAttempt.body.payment.id;
+  const proof = await me.req('POST', `/api/v1/customer/payments/${p1}/manual-proof`, { senderWallet: '01275555667', screenshot: { mime: 'image/png', data: PNG } });
+  ok('18. screenshot first → PENDING_VERIFICATION (screenshot is not proof)', proof.body.status === 'PENDING_VERIFICATION');
+  const s1 = sms('50.00', '01275555667');
+  const r1 = await sendSms(s1.text);
+  const st1 = (await q(`SELECT p.status,p.provisional_activation,o.status ostatus FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1`, [p1])).rows[0];
+  ok('7. matching SMS → AUTO_VERIFIED', r1.body.status === 'MATCHED' && st1.status === 'AUTO_VERIFIED', JSON.stringify(r1.body));
+  ok('24h rule: service activated provisionally (order PAID, fulfil queued)', st1.provisional_activation === true && st1.ostatus === 'PAID');
+  ok('13. duplicate SMS ignored', (await sendSms(s1.text)).body.duplicate === true);
+  ok('12. reused transaction reference rejected', (await sendSms(s1.text.replace('TEST USER', 'TEST  USER  X'))).body.status === 'DUPLICATE');
+  ok('38. other customer cannot see screenshot', (await other.req('GET', `/api/v1/customer/payments/${p1}/screenshot`)).status === 404);
+  ok('owner can see own screenshot', (await me.req('GET', `/api/v1/customer/payments/${p1}/screenshot`)).status === 200);
+  // provisional → expiry suspends the service; confirm resumes it
+  const svc = (await q(`INSERT INTO services(customer_id,category_id,plan_id,status,origin_order_item_id) SELECT $1,p.category_id,p.id,'ACTIVE',$2 FROM config_plans p LIMIT 1 RETURNING id`, [cust, v1.itemId])).rows[0].id;
+  await q(`UPDATE payments SET review_expires_at=now()-interval '1 minute' WHERE id=$1`, [p1]); await paymentSweep(pool);
+  const ex = (await q(`SELECT p.status,s.status sstatus FROM payments p, services s WHERE p.id=$1 AND s.id=$2`, [p1, svc])).rows[0];
+  ok('20. 24h without accountant → REVIEW_EXPIRED and service suspended', ex.status === 'REVIEW_EXPIRED' && ex.sstatus === 'SUSPENDED', JSON.stringify(ex));
+  const noReason = await admin.req('POST', `/api/v1/admin/payments/${p1}/confirm`, {});
+  ok('confirming an expired review requires a written reason', noReason.status === 400);
+  const conf = await admin.req('POST', `/api/v1/admin/payments/${p1}/confirm`, { reason: 'verified in wallet app' });
+  const after = (await q(`SELECT p.status,s.status sstatus FROM payments p, services s WHERE p.id=$1 AND s.id=$2`, [p1, svc])).rows[0];
+  ok('21. accountant confirmation → PAID and service resumed', conf.status === 200 && after.status === 'PAID' && after.sstatus === 'ACTIVE', JSON.stringify(after));
+  // SMS before screenshot
+  const v2 = await order(cust, 4200); const p2 = (await me.req('POST', `/api/v1/customer/orders/${v2.id}/payments`, { method: 'VODAFONE_CASH' })).body.payment.id;
+  const s2 = sms('42.00', '01275555667'); const early = await sendSms(s2.text);
+  ok('17a. SMS before screenshot stays UNMATCHED', early.body.status === 'UNMATCHED');
+  const late = await me.req('POST', `/api/v1/customer/payments/${p2}/manual-proof`, { senderWallet: '+20 127 555 5667', screenshot: { mime: 'image/png', data: PNG } });
+  ok('17b. …then proof arrives → AUTO_VERIFIED', late.body.status === 'AUTO_VERIFIED', JSON.stringify(late.body));
+  const rej = await admin.req('POST', `/api/v1/admin/payments/${p2}/reject`, { reason: 'not in wallet' });
+  ok('22. accountant rejection → REJECTED', rej.body.status === 'REJECTED');
+  // wrong amount / sender / receiver via HTTP
+  const v3 = await order(cust, 3000); const p3 = (await me.req('POST', `/api/v1/customer/orders/${v3.id}/payments`, { method: 'VODAFONE_CASH' })).body.payment.id;
+  await me.req('POST', `/api/v1/customer/payments/${p3}/manual-proof`, { senderWallet: '01275555667', screenshot: { mime: 'image/png', data: PNG } });
+  ok('8. wrong amount not verified', (await sendSms(sms('29.00', '01275555667').text)).body.reason === 'AMOUNT_MISMATCH');
+  ok('9. wrong sender not verified', (await sendSms(sms('30.00', '01011111111').text)).body.status === 'UNMATCHED');
+  ok('10. wrong receiver not verified', (await sendSms(sms('30.00', '01275555667').text.replace('01044577552', '01000000001'))).body.reason === 'RECEIVER_NOT_OURS');
+  ok('11. old transaction not verified', (await sendSms(sms('30.00', '01275555667', 600).text)).body.reason === 'OUTSIDE_PAYMENT_WINDOW');
+  ok('16. malformed VC SMS stored for manual review', (await sendSms('تم استلام مبلغ من محفظتك ؟؟ vf.eg/vfcash ' + Date.now())).body.status === 'MANUAL_REVIEW');
+  ok('unrelated personal SMS not stored', (await sendSms('عيد ميلاد سعيد يا صديقي')).body.ignored === true);
+  // router orders are never activated provisionally
+  const rv = await order(cust, 2500, true); const rp = (await me.req('POST', `/api/v1/customer/orders/${rv.id}/payments`, { method: 'VODAFONE_CASH' })).body.payment.id;
+  await me.req('POST', `/api/v1/customer/payments/${rp}/manual-proof`, { senderWallet: '01275555667', screenshot: { mime: 'image/png', data: PNG } });
+  await sendSms(sms('25.00', '01275555667').text);
+  const rr = (await q(`SELECT p.status,p.provisional_activation,o.status ostatus FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1`, [rp])).rows[0];
+  ok('router order: AUTO_VERIFIED but NOT shipped/activated before accountant', rr.status === 'AUTO_VERIFIED' && rr.provisional_activation === false && rr.ostatus === 'PENDING_PAYMENT');
+  ok('file upload: non-image rejected', (await me.req('POST', `/api/v1/customer/payments/${rp}/manual-proof`, { senderWallet: '01275555667', screenshot: { mime: 'image/png', data: Buffer.from('<?php echo 1;').toString('base64') } })).status >= 400);
+
+  console.log('ROUTER ORDERS (ship flow)');
+  const ro = await order(cust, 125000, true);
+  await q(`UPDATE orders SET status='FULFILLING' WHERE id=$1`, [ro.id]);
+  await q(`UPDATE order_items SET fulfillment_status='NEEDS_ATTENTION',fulfillment_detail='NO_ROUTER_STOCK' WHERE id=$1`, [ro.itemId]);
+  const listed = (await admin.req('GET', '/api/v1/admin/orders')).body.find(o => o.id === ro.id);
+  ok('admin list exposes routers_waiting so the UI hides "ship"', listed.routers_waiting === 1 && listed.routers_ready === 0);
+  const shipEarly = await admin.req('POST', `/api/v1/admin/orders/${ro.id}/ship`, {});
+  ok('ship before stock → clear 409 telling admin what to do', shipEarly.status === 409 && /المخزن/.test(shipEarly.body.error), JSON.stringify(shipEarly.body));
+  await q(`UPDATE routers SET lifecycle_status='DECOMMISSIONED' WHERE lifecycle_status='IN_STOCK'`);
+  ok('allocate with empty stock → 409', (await admin.req('POST', `/api/v1/admin/orders/${ro.id}/allocate-routers`, {})).status === 409);
+  const serial = 'SN-' + Date.now();
+  ok('register router into stock', (await admin.req('POST', '/api/v1/admin/routers/stock', { serialNumber: serial, model: 'KT 708' })).status === 200);
+  ok('duplicate serial refused', (await admin.req('POST', '/api/v1/admin/routers/stock', { serialNumber: serial, model: 'KT 708' })).status === 409);
+  const alloc = await admin.req('POST', `/api/v1/admin/orders/${ro.id}/allocate-routers`, {});
+  ok('allocate → READY_TO_SHIP', alloc.body.allocated === 1 && (await q(`SELECT fulfillment_status FROM order_items WHERE id=$1`, [ro.itemId])).rows[0].fulfillment_status === 'READY_TO_SHIP');
+  ok('ship → SHIPPED', (await admin.req('POST', `/api/v1/admin/orders/${ro.id}/ship`, {})).body.status === 'SHIPPED');
+  ok('deliver → COMPLETED', (await admin.req('POST', `/api/v1/admin/orders/${ro.id}/deliver`, {})).body.status === 'COMPLETED');
+  // bundle: router + config — router must still go through shipping
+  const bo = await order(cust, 140000, true);
+  const plan = (await q(`SELECT id FROM config_plans LIMIT 1`)).rows[0].id;
+  await q(`INSERT INTO order_items(order_id,item_type,plan_id,name_snapshot,unit_price_minor,fulfillment_status) VALUES($1,'CONFIG_NEW',$2,'cfg',15000,'FULFILLED')`, [bo.id, plan]);
+  await q(`UPDATE orders SET status='PAID' WHERE id=$1`, [bo.id]);
+  await admin.req('POST', '/api/v1/admin/routers/stock', { serialNumber: serial + 'b', model: 'KT 708' });
+  await admin.req('POST', `/api/v1/admin/orders/${bo.id}/allocate-routers`, {});
+  ok('bundle: ship allowed (was "router-only orders" before)', (await admin.req('POST', `/api/v1/admin/orders/${bo.id}/ship`, {})).body.status === 'SHIPPED');
+  ok('bundle: deliver → COMPLETED', (await admin.req('POST', `/api/v1/admin/orders/${bo.id}/deliver`, {})).body.status === 'COMPLETED');
+
+  console.log('CATALOG');
+  const rpId = (await q(`INSERT INTO router_products(sku,name,model,price_minor) VALUES($1,'Temp','T',100) RETURNING id`, ['SKU-' + Date.now()])).rows[0].id;
+  ok('archive router product', (await admin.req('DELETE', `/api/v1/admin/catalog/router-products/${rpId}`)).status === 200);
+  const cat = (await admin.req('GET', '/api/v1/admin/catalog')).body;
+  ok('archived product hidden from admin + customer catalog', !cat.routerProducts.some(x => x.id === rpId) && !(await me.req('GET', '/api/v1/customer/catalog/router-products')).body.some(x => x.id === rpId));
+  ok('archived row kept for order history', (await q(`SELECT status FROM router_products WHERE id=$1`, [rpId])).rows[0].status === 'ARCHIVED');
+  ok('add provider from panel', (await admin.req('POST', '/api/v1/admin/provider-instances', { name: 'p-' + Date.now(), baseUrl: 'http://marzban2:8080', username: 'u', password: 'p' })).status === 200);
+
+  console.log('SECURITY');
+  ok('34. invalid device token rejected', (await sendSms(sms('1.00', '01275555667').text, 'x'.repeat(40))).status === 401);
+  await admin.req('PATCH', `/api/v1/admin/payment-devices/${dev.body.device.id}`, { enabled: false });
+  ok('35. disabled device rejected', (await sendSms(sms('1.00', '01275555667').text)).status === 403);
+  ok('37. customer cannot call accountant actions', (await me.req('POST', `/api/v1/admin/payments/${rp}/confirm`, {})).status === 401);
+  ok('37b. customer cannot list admin payments', (await me.req('GET', `/api/v1/admin/payments`)).status === 401);
+  ok('Kashier payments cannot be confirmed manually', (await admin.req('POST', `/api/v1/admin/payments/${foP}/confirm`, { reason: 'x' })).status === 409);
+  ok('legacy unsigned webhook retired (410)', (await new Client().req('POST', '/api/v1/webhooks/payments/manual', { paymentId: rp, status: 'succeeded' })).status === 410);
+  ok('admin can view screenshot', (await admin.req('GET', `/api/v1/admin/payments/${p1}/screenshot`)).status === 200);
+  const audit = Number((await q(`SELECT count(*) n FROM payment_audit_logs WHERE payment_id=$1`, [p1])).rows[0].n);
+  ok('every state change audited', audit >= 5, `rows=${audit}`);
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  await pool.end(); process.exit(fail ? 1 : 0);
+}
+main().catch(async e => { console.error(e); await pool.end(); process.exit(1); });

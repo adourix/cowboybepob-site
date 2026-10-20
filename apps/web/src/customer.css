@@ -21,7 +21,8 @@
 
 /* ─── page frame ─── */
 .cx{min-height:100vh;background:radial-gradient(1200px 500px at 70% -10%,rgba(44,198,236,.08),transparent 60%),linear-gradient(180deg,var(--bg2),var(--bg));padding:12px clamp(10px,1.6vw,24px) 0}
-:is(.cx,.cx-auth) .cx-page{max-width:1560px;margin:0 auto;padding-bottom:28px;animation:cx-in .5s cubic-bezier(.2,.8,.2,1) both}
+:is(.cx,.cx-auth) .cx-page{max-width:1560px;margin:0 auto;padding-bottom:28px;animation:cx-fade .45s ease both}
+/* opacity only: an animated transform/filter would become the containing block of position:fixed modals */
 @keyframes cx-in{from{opacity:0;transform:translateY(8px)}}
 .cx-foot{max-width:1560px;margin:0 auto;display:flex;align-items:center;gap:14px;justify-content:space-between;padding:14px 4px 18px;font-size:13px;color:var(--cyan);border-top:1px solid var(--line);direction:ltr}
 :is(.cx,.cx-auth) .hazard{display:inline-block;width:110px;height:14px;background:repeating-linear-gradient(-55deg,var(--red) 0 7px,transparent 7px 13px);opacity:.9}
@@ -468,3 +469,52 @@
 }
 
 .table-scroll{overflow-x:auto;margin:0 -6px}:is(.cx,.cx-auth) .table-scroll .cx-table{min-width:520px}
+
+/* ═══════════ AUTH THEMES (from the email designs) ═══════════ */
+.cx-auth.theme-red{--gold:#e04a37;--gold2:#ff6a52;--cyan:#ff8a75}
+.cx-auth.theme-blue{--gold:#2f7df0;--gold2:#4f95ff;--cyan:#7fb2ff}
+.cx-auth.theme-red .cx-auth-bg{filter:sepia(.6) hue-rotate(-30deg) saturate(2.2) brightness(.7)}
+.cx-auth.theme-blue .cx-auth-bg{filter:hue-rotate(10deg) saturate(1.3) brightness(.75)}
+.cx-auth.theme-red .poster-frame{border-color:rgba(224,74,55,.9)}
+.cx-auth.theme-blue .poster-frame{border-color:rgba(47,125,240,.9);box-shadow:0 0 0 6px rgba(10,16,28,.9),0 0 0 7px rgba(47,125,240,.35),0 30px 80px rgba(0,0,0,.7)}
+.cx-auth.theme-red .cx-btn.gold,.cx-auth.theme-blue .cx-btn.gold{color:#fff}
+:is(.cx,.cx-auth) .poster-art.wide{height:44%;object-fit:cover;object-position:60% center;-webkit-mask-image:linear-gradient(180deg,transparent,#000 22%);mask-image:linear-gradient(180deg,transparent,#000 22%)}
+:is(.cx,.cx-auth) .poster-frame>.poster-quote{position:absolute;z-index:2;bottom:18px;left:22px;font-size:12px;color:#e9e3d8;letter-spacing:.16em;text-shadow:0 2px 8px #000}
+:is(.cx,.cx-auth) .auth-title .accent{color:var(--gold)}
+
+/* ═══════════ CUSTOMER PAYMENT FLOW ═══════════ */
+:is(.cx,.cx-auth) .payflow{display:flex;flex-direction:column;gap:14px}
+:is(.cx,.cx-auth) .pay-amount{display:flex;align-items:baseline;justify-content:space-between;padding:14px 18px;border:1px solid rgba(247,185,40,.5);background:rgba(247,185,40,.05)}
+:is(.cx,.cx-auth) .pay-amount span{color:var(--muted)}
+:is(.cx,.cx-auth) .pay-amount b{font-family:var(--num);font-size:34px;color:var(--gold)}
+:is(.cx,.cx-auth) .pay-amount small{font-size:15px;color:var(--muted)}
+:is(.cx,.cx-auth) .pay-methods{display:grid;gap:10px}
+:is(.cx,.cx-auth) .pay-method{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid rgba(44,198,236,.35);background:#050a13;cursor:pointer;transition:border-color .15s,background .15s}
+:is(.cx,.cx-auth) .pay-method input{width:18px;height:18px;accent-color:var(--gold)}
+:is(.cx,.cx-auth) .pay-method.on{border-color:var(--gold);background:rgba(247,185,40,.06)}
+:is(.cx,.cx-auth) .pay-method.off{opacity:.5;cursor:not-allowed}
+:is(.cx,.cx-auth) .pm-ico{display:grid;place-items:center;width:42px;height:42px;border:1px solid rgba(44,198,236,.45);color:var(--cyan)}
+:is(.cx,.cx-auth) .pay-method.on .pm-ico{border-color:var(--gold);color:var(--gold)}
+:is(.cx,.cx-auth) .pay-method b{display:block;font-size:16px}
+:is(.cx,.cx-auth) .pay-method small{display:block;color:var(--muted);font-size:13px}
+:is(.cx,.cx-auth) .vc-steps{margin:0;padding:0;list-style:none;counter-reset:s;display:flex;flex-direction:column;gap:16px}
+:is(.cx,.cx-auth) .vc-steps>li{counter-increment:s;position:relative;padding-inline-start:44px;display:flex;flex-direction:column;gap:8px}
+:is(.cx,.cx-auth) .vc-steps>li::before{content:counter(s);position:absolute;inset-inline-start:0;top:0;display:grid;place-items:center;width:30px;height:30px;border-radius:50%;border:2px solid var(--gold);color:var(--gold);font-family:var(--num)}
+:is(.cx,.cx-auth) .vc-box{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border:1px solid rgba(44,198,236,.35);background:#050a13}
+:is(.cx,.cx-auth) .vc-box strong{font-family:var(--num);font-size:24px;color:var(--gold)}
+:is(.cx,.cx-auth) .vc-box .wallet{font-family:var(--num);font-size:24px;letter-spacing:.06em}
+:is(.cx,.cx-auth) .upload{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:130px;border:1px dashed rgba(44,198,236,.55);background:rgba(44,198,236,.03);cursor:pointer;color:var(--cyan);overflow:hidden}
+:is(.cx,.cx-auth) .upload input{position:absolute;width:1px;height:1px;opacity:0}
+:is(.cx,.cx-auth) .upload img{max-height:220px;width:auto;object-fit:contain}
+:is(.cx,.cx-auth) .upload:focus-within{border-color:var(--gold)}
+:is(.cx,.cx-auth) .pay-status{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;padding:10px 6px}
+:is(.cx,.cx-auth) .pay-status h3{margin:4px 0 0;font-size:21px}
+:is(.cx,.cx-auth) .pay-status p{margin:0;color:var(--muted);max-width:46ch;line-height:1.8}
+:is(.cx,.cx-auth) .pay-status .kv{width:100%;max-width:360px;margin-top:8px}
+:is(.cx,.cx-auth) .pay-status.t-ok svg{color:var(--green)}:is(.cx,.cx-auth) .pay-status.t-bad svg{color:#ff5a55}:is(.cx,.cx-auth) .pay-status.t-info svg,:is(.cx,.cx-auth) .pay-status.t-warn svg{color:var(--gold)}
+:is(.cx,.cx-auth) .pay-return{max-width:620px;margin:30px auto;display:flex;flex-direction:column;align-items:center;gap:16px;padding:24px;border:1px solid rgba(44,198,236,.4);background:linear-gradient(180deg,rgba(13,22,40,.97),rgba(6,11,21,.98))}
+:is(.cx,.cx-auth) .pay-chip{display:inline-block;padding:2px 8px;font-size:12px;border:1px solid currentColor;text-align:center}
+:is(.cx,.cx-auth) .pay-chip.t-ok{color:var(--green)}:is(.cx,.cx-auth) .pay-chip.t-warn,:is(.cx,.cx-auth) .pay-chip.t-info{color:var(--gold)}:is(.cx,.cx-auth) .pay-chip.t-bad{color:#ff5a55}:is(.cx,.cx-auth) .pay-chip.t-idle{color:var(--muted)}
+:is(.cx,.cx-auth) .spin{animation:cx-spin 1s linear infinite}
+@keyframes cx-spin{to{transform:rotate(360deg)}}
+:is(.cx,.cx-auth) .kv.small>div{font-size:14px;padding:6px 0}

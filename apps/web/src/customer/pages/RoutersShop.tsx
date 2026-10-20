@@ -5,6 +5,7 @@ import { money, moneyNum, num } from '../../lib/api';
 import { usePortal } from '../Portal';
 import { Banner, Empty, Hud, Modal, useToast } from '../ui';
 import { LandlinePicker, placeOrder } from '../checkout';
+import { PaymentFlow } from '../PaymentFlow';
 
 type Product = { id: string; sku: string; name: string; model: string; price_minor: number | string; currency: string; brand?: string | null; description?: string | null; image_url?: string | null; specs?: any; featured?: boolean };
 const speedMbps = (s?: string) => { const m = String(s || '').match(/([\d.]+)\s*(g|m)/i); return m ? Number(m[1]) * (m[2].toLowerCase() === 'g' ? 1000 : 1) : 0; };
@@ -15,7 +16,7 @@ export function RoutersShop() {
   const products: Product[] = routerProducts;
   const maxPrice = Math.max(0, ...products.map(p => Number(p.price_minor)));
   const [q, setQ] = useState(''); const [brands, setBrands] = useState<string[]>([]); const [conns, setConns] = useState<string[]>([]); const [speeds, setSpeeds] = useState<number[]>([]);
-  const [priceCap, setPriceCap] = useState<number | null>(null); const [sort, setSort] = useState('featured'); const [buying, setBuying] = useState<Product | null>(null);
+  const [priceCap, setPriceCap] = useState<number | null>(null); const [sort, setSort] = useState('featured'); const [buying, setBuying] = useState<Product | null>(null); const [payOrder, setPayOrder] = useState<string | null>(null);
   useEffect(() => { const pre = products.find(p => p.id === params.get('product')); if (pre) setBuying(pre); }, [products.length]);
   const allBrands = Array.from(new Set(products.map(p => p.brand).filter(Boolean))) as string[];
   const allConns = Array.from(new Set(products.flatMap(p => String(p.specs?.connection || '').split('/').map(s => s.trim())).filter(Boolean)));
@@ -60,7 +61,8 @@ export function RoutersShop() {
         {!list.length && <Hud className="span-all"><Empty title={products.length ? 'لا توجد راوترات بهذه الفلاتر' : 'لا توجد راوترات متاحة حاليًا'} text={products.length ? 'خفف الفلاتر لعرض المزيد.' : 'عُد لاحقًا.'} /></Hud>}
       </div>
     </div>
-    {buying && <RouterCheckout product={buying} plans={categories.filter((c: any) => c.router_compatible !== false).flatMap((c: any) => (c.plans || []).filter((p: any) => p.quotaPricingMode !== 'PER_GB').map((p: any) => ({ ...p, category: c.name })))} onClose={() => setBuying(null)} onDone={async code => { toast.ok(`تم إنشاء الطلب ${code}. سيُجهز بعد تأكيد الدفع.`); setBuying(null); await refresh(); window.setTimeout(() => nav('/customer/orders'), 1200); }} onError={toast.bad} />}
+    {payOrder && <PaymentFlow orderId={payOrder} onClose={() => { setPayOrder(null); nav('/customer/orders'); }} onDone={() => void refresh()} />}
+    {buying && <RouterCheckout product={buying} plans={categories.filter((c: any) => c.router_compatible !== false).flatMap((c: any) => (c.plans || []).filter((p: any) => p.quotaPricingMode !== 'PER_GB').map((p: any) => ({ ...p, category: c.name })))} onClose={() => setBuying(null)} onDone={async id => { setBuying(null); await refresh(); setPayOrder(id); }} onError={toast.bad} />}
   </div>;
 }
 
@@ -71,7 +73,7 @@ function RouterCheckout({ product, plans, onClose, onDone, onError }: { product:
   const submit = async () => {
     if (plan && !landline) { onError('اختر رقمًا أرضيًا للباقة.'); return; }
     setBusy(true);
-    try { const items: any[] = [{ type: 'ROUTER', routerProductId: product.id }]; if (plan) items.push({ type: 'CONFIG_NEW', planId: plan.id, landlineId: landline, useWithRouter: true }); const o = await placeOrder(items); onDone(o.public_code); }
+    try { const items: any[] = [{ type: 'ROUTER', routerProductId: product.id }]; if (plan) items.push({ type: 'CONFIG_NEW', planId: plan.id, landlineId: landline, useWithRouter: true }); const o = await placeOrder(items); onDone(o.id); }
     catch (e: any) { onError(e.message); } finally { setBusy(false); }
   };
   return <Modal title={`شراء ${product.name}`} onClose={onClose}>

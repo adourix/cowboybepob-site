@@ -8,11 +8,12 @@ import { api, date, label, money, User } from './lib/api';
 import { CustomerPortal } from './customer/Portal';
 import { LoginScreen, RegisterScreen, ResetPasswordScreen, VerifyEmailScreen } from './auth/Auth';
 import './customer.css';
+import { PaymentsAdmin } from './admin/PaymentsAdmin';
 
 const TONE: Record<string, 'ok' | 'warn' | 'bad'> = {
   ACTIVE: 'ok', READY: 'ok', ONLINE: 'ok', PAID: 'ok', SUCCEEDED: 'ok', COMPLETED: 'ok', HEALTHY: 'ok', CURRENT: 'ok', SHIPPED: 'ok',
   PROVISIONING: 'warn', ASSIGNED: 'warn', IN_STOCK: 'warn', READY_TO_SHIP: 'warn', FULFILLING: 'warn', PENDING_PAYMENT: 'warn', INITIATED: 'warn', PENDING: 'warn', QUEUED: 'warn', RUNNING: 'warn', DEGRADED: 'warn', DRAINING: 'warn', MAINTENANCE: 'warn',
-  SUSPENDED: 'bad', TERMINATED: 'bad', OFFLINE: 'bad', NEEDS_ATTENTION: 'bad', FAILED: 'bad', CANCELLED: 'bad', DOWN: 'bad', EXPIRED: 'bad', REJECTED: 'bad'
+  SUSPENDED: 'bad', TERMINATED: 'bad', PAYMENT_REJECTED: 'bad', PAYMENT_REVIEW: 'warn', AWAITING_TRANSFER: 'warn', PENDING_VERIFICATION: 'warn', AUTO_VERIFIED: 'warn', REVIEW_EXPIRED: 'bad', CHECKOUT_STARTED: 'warn', PROCESSING: 'warn', OFFLINE: 'bad', NEEDS_ATTENTION: 'bad', FAILED: 'bad', CANCELLED: 'bad', DOWN: 'bad', EXPIRED: 'bad', REJECTED: 'bad'
 };
 function Status({ v }: { v: any }) {
   return <span className={`status ${TONE[String(v)] || 'idle'}`}><i aria-hidden />{label(v)}</span>;
@@ -243,7 +244,8 @@ function ResourcePage({ kind, user: _user }: { kind: ResourceKind; user: User })
   const confirmPayment = (id: string) => act('تأكيد استلام الدفع لهذا الطلب؟ سيتم تحويل الطلب إلى مدفوع وتشغيل التجهيز تلقائيًا.', `/api/v1/admin/payments/${id}/confirm`);
   const rejectPayment = (id: string) => { const reason = window.prompt('سبب رفض الدفع:', 'لم يتم استلام/مطابقة التحويل'); if (reason === null) return; void act(null, `/api/v1/admin/payments/${id}/reject`, { reason }); };
   const shipRouterOrder = (id: string) => act('تأكيد شحن طلب الراوتر؟', `/api/v1/admin/orders/${id}/ship`);
-  const deliverRouterOrder = (id: string) => act('تأكيد استلام العميل للراوتر؟ سيتم إكمال الطلب.', `/api/v1/admin/orders/${id}/deliver`);
+  const deliverRouterOrder = (id: string) => act('تأكيد استلام العميل للراوتر؟', `/api/v1/admin/orders/${id}/deliver`);
+  const allocateRouters = (id: string) => { const serial = window.prompt('رقم تسلسلي محدد من المخزن (اتركه فارغًا لاختيار أقدم راوتر متاح):', ''); if (serial === null) return; void act(null, `/api/v1/admin/orders/${id}/allocate-routers`, serial.trim() ? { serialNumber: serial.trim() } : {}); };
   const colSpan = m.cols.length + (hasActions ? 1 : 0);
   return <div className="page">
     <Scene scene={m.scene} title={m.title} sub={m.sub} onAdd={canAdd ? () => setOpen(true) : undefined} />
@@ -268,8 +270,10 @@ function ResourcePage({ kind, user: _user }: { kind: ResourceKind; user: User })
               {r.status === 'FAILED' && <span className="muted">مرفوض</span>}
             </div></td>}
             {kind === 'orders' && <td><div className="row-actions">
-              {r.router_only && String(r.status) === 'FULFILLING' && <button className="btn btn-signal btn-sm" type="button" onClick={() => void shipRouterOrder(r.id)} disabled={loading}>شحن الطلب</button>}
-              {r.router_only && String(r.status) === 'SHIPPED' && <button className="btn btn-signal btn-sm" type="button" onClick={() => void deliverRouterOrder(r.id)} disabled={loading}>تم التسليم</button>}
+              {r.router_items > 0 && r.routers_waiting > 0 && ['PAID', 'FULFILLING'].includes(String(r.status)) && <button className="btn btn-ghost btn-sm" type="button" onClick={() => void allocateRouters(r.id)} disabled={loading} title="يخصص راوترًا من المخزن لهذا الطلب">تجهيز الراوتر ({r.routers_waiting})</button>}
+              {r.router_items > 0 && r.routers_waiting === 0 && r.routers_ready > 0 && String(r.status) === 'FULFILLING' && <button className="btn btn-signal btn-sm" type="button" onClick={() => void shipRouterOrder(r.id)} disabled={loading}>شحن الطلب</button>}
+              {r.router_items > 0 && String(r.status) === 'SHIPPED' && <button className="btn btn-signal btn-sm" type="button" onClick={() => void deliverRouterOrder(r.id)} disabled={loading}>تم التسليم</button>}
+              {String(r.status) === 'PENDING_PAYMENT' && <span className="muted">بانتظار الدفع</span>}
             </div></td>}
           </tr>)}</tbody>
       </table></div>
@@ -299,6 +303,23 @@ function CustomerForm({ onClose, onDone }: { onClose: () => void; onDone: () => 
   </form></Modal>;
 }
 function RouterForm({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [mode, setMode] = useState<'stock' | 'assign'>('stock');
+  if (mode === 'stock') return <StockRouterForm onClose={onClose} onDone={onDone} onSwitch={() => setMode('assign')} />;
+  return <AssignRouterForm onClose={onClose} onDone={onDone} onSwitch={() => setMode('stock')} />;
+}
+function StockRouterForm({ onClose, onDone, onSwitch }: { onClose: () => void; onDone: () => void; onSwitch: () => void }) {
+  const [v, setV] = useState<any>({ model: 'KT 708' });
+  const { error, saving, save } = useSave(async () => { await api('/api/v1/admin/routers/stock', { method: 'POST', body: JSON.stringify(v) }); onDone(); });
+  return <Modal title="إضافة راوتر للمخزن" onClose={onClose}><form onSubmit={save}>
+    <div className="segmented-admin"><button type="button" className="on">للمخزن (للبيع)</button><button type="button" onClick={onSwitch}>ربط بعميل وكونفيج</button></div>
+    <p className="muted">الراوترات في المخزن تُخصص تلقائيًا لطلبات الشراء، أو من زر «تجهيز الراوتر» في الطلبات.</p>
+    <div className="field-pair"><Field label="Serial Number" value={v.serialNumber || ''} onChange={x => setV({ ...v, serialNumber: x })} /><Field label="Device ID" value={v.deviceIdentifier || ''} onChange={x => setV({ ...v, deviceIdentifier: x })} /></div>
+    <div className="field-pair"><Field label="Model" value={v.model || ''} onChange={x => setV({ ...v, model: x })} /><Field label="Firmware" value={v.openwrtVersion || ''} onChange={x => setV({ ...v, openwrtVersion: x })} /></div>
+    {error && <div className="alert error">{error}</div>}
+    <button className="btn btn-signal btn-full" disabled={saving || !v.serialNumber || !v.model}>{saving ? 'جارٍ الحفظ…' : 'إضافة للمخزن'}</button>
+  </form></Modal>;
+}
+function AssignRouterForm({ onClose, onDone, onSwitch }: { onClose: () => void; onDone: () => void; onSwitch: () => void }) {
   const [v, setV] = useState<any>({}); const [customers, setCustomers] = useState<any[]>([]); const [configs, setConfigs] = useState<any[]>([]);
   const [error, setError] = useState(''); const [saving, setSaving] = useState(false); const [loadingConfigs, setLoadingConfigs] = useState(false);
   useEffect(() => { void api('/api/v1/admin/customers').then(setCustomers).catch(e => setError(e.message)); }, []);
@@ -309,6 +330,7 @@ function RouterForm({ onClose, onDone }: { onClose: () => void; onDone: () => vo
   }, [v.customerId]);
   const save = async (e: FormEvent) => { e.preventDefault(); setSaving(true); setError(''); try { await api('/api/v1/admin/routers', { method: 'POST', body: JSON.stringify(v) }); onDone(); } catch (e: any) { setError(e.message); } finally { setSaving(false); } };
   return <Modal title="تسجيل راوتر وربطه بكونفيج" onClose={onClose}><form onSubmit={save}>
+    <div className="segmented-admin"><button type="button" onClick={onSwitch}>للمخزن (للبيع)</button><button type="button" className="on">ربط بعميل وكونفيج</button></div>
     <div className="field-pair"><Field label="Serial Number" value={v.serialNumber || ''} onChange={x => setV({ ...v, serialNumber: x })} /><Field label="Device ID" value={v.deviceIdentifier || ''} onChange={x => setV({ ...v, deviceIdentifier: x })} /></div>
     <div className="field-pair"><Field label="Model" value={v.model || ''} onChange={x => setV({ ...v, model: x })} /><Field label="Firmware" value={v.openwrtVersion || ''} onChange={x => setV({ ...v, openwrtVersion: x })} /></div>
     <label className="field"><span>العميل</span><select value={v.customerId || ''} onChange={e => setV({ ...v, customerId: e.target.value, configId: '' })} required>
@@ -348,12 +370,19 @@ function Catalog() {
     await api(path, { method: 'POST', body: JSON.stringify(body) }); setKind(''); setV(blank); load();
   });
   const gb = (b: any) => Math.round(Number(b) / 1073741824);
+  const [catErr, setCatErr] = useState('');
+  const archive = async (kind: 'categories' | 'plans' | 'router-products', x: any) => {
+    const extraNote = kind === 'categories' ? ' سيتم إخفاء باقاتها أيضًا.' : '';
+    if (!window.confirm(`حذف «${x.name}» من الكتالوج؟ سيختفي من المتجر، ويبقى في سجل الطلبات القديمة.${extraNote}`)) return;
+    setCatErr(''); try { await api(`/api/v1/admin/catalog/${kind}/${x.id}`, { method: 'DELETE' }); await load(); } catch (e: any) { setCatErr(e.message); }
+  };
   return <div className="page">
     <Scene scene="files" title="الكتالوج" sub="الفئات والباقات ومنتجات الراوتر التي يراها العميل." />
+    {catErr && <div className="alert error">{catErr}</div>}
     <div className="file-columns">
-      <FileList title="الفئات" codeLabel="البروتوكول" nameLabel="الفئة" items={d.categories} onAdd={() => setKind('category')} code={(x: any) => String(x.protocol || '').toUpperCase()} name={(x: any) => x.name} />
-      <FileList title="الباقات" codeLabel="المدة والحصة" nameLabel="الباقة" items={d.plans} onAdd={() => setKind('plan')} code={(x: any) => `${x.duration_days ?? '—'} يوم${x.quota_bytes ? ` / ${gb(x.quota_bytes)} GB` : ''}${x.quota_pricing_mode === 'PER_GB' ? ' / سعر لكل GB' : ''}`} name={(x: any) => x.name} extra={(x: any) => money(x.price_minor)} />
-      <FileList title="منتجات الراوتر" codeLabel="SKU" nameLabel="المنتج" items={d.routerProducts} onAdd={() => setKind('router')} code={(x: any) => x.sku || x.model} name={(x: any) => x.name} extra={(x: any) => money(x.price_minor)} />
+      <FileList title="الفئات" onDelete={x => void archive('categories', x)} codeLabel="البروتوكول" nameLabel="الفئة" items={d.categories} onAdd={() => setKind('category')} code={(x: any) => String(x.protocol || '').toUpperCase()} name={(x: any) => x.name} />
+      <FileList title="الباقات" onDelete={x => void archive('plans', x)} codeLabel="المدة والحصة" nameLabel="الباقة" items={d.plans} onAdd={() => setKind('plan')} code={(x: any) => `${x.duration_days ?? '—'} يوم${x.quota_bytes ? ` / ${gb(x.quota_bytes)} GB` : ''}${x.quota_pricing_mode === 'PER_GB' ? ' / سعر لكل GB' : ''}`} name={(x: any) => x.name} extra={(x: any) => money(x.price_minor)} />
+      <FileList title="منتجات الراوتر" onDelete={x => void archive('router-products', x)} codeLabel="SKU" nameLabel="المنتج" items={d.routerProducts} onAdd={() => setKind('router')} code={(x: any) => x.sku || x.model} name={(x: any) => x.name} extra={(x: any) => money(x.price_minor)} />
     </div>
     {kind && <Modal title={kind === 'category' ? 'فئة جديدة' : kind === 'plan' ? 'باقة جديدة' : 'منتج راوتر جديد'} onClose={() => setKind('')}><form onSubmit={save}>
       {kind === 'category' ? <>
@@ -388,12 +417,12 @@ function Catalog() {
     </form></Modal>}
   </div>;
 }
-function FileList({ title, items, onAdd, codeLabel, nameLabel, code, name, extra }: { title: string; items: any[]; onAdd: () => void; codeLabel: string; nameLabel: string; code: (x: any) => string; name: (x: any) => string; extra?: (x: any) => string }) {
+function FileList({ title, items, onAdd, onDelete, codeLabel, nameLabel, code, name, extra }: { title: string; items: any[]; onAdd: () => void; onDelete?: (x: any) => void; codeLabel: string; nameLabel: string; code: (x: any) => string; name: (x: any) => string; extra?: (x: any) => string }) {
   return <section className="panel file-list">
     <div className="panel-head"><div><h2>{title}</h2><p>{items.length.toLocaleString('ar-EG')} عنصر</p></div><button className="icon-btn signal" onClick={onAdd} aria-label={`إضافة إلى ${title}`}><Plus size={18} /></button></div>
     {items.slice(0, 12).map((x, i) => <div className="file-row" key={x.id || i}>
       <div className="file-line"><span>{codeLabel}</span><em>{code(x)}</em></div>
-      <div className="file-line"><span>{nameLabel}</span><strong>{name(x)}</strong>{extra && <b className="file-extra">{extra(x)}</b>}</div>
+      <div className="file-line"><span>{nameLabel}</span><strong>{name(x)}</strong>{extra && <b className="file-extra">{extra(x)}</b>}{onDelete && <button className="icon-btn danger file-del" onClick={() => onDelete(x)} aria-label={`حذف ${name(x)}`} title="حذف (أرشفة)"><Trash2 size={15} /></button>}</div>
     </div>)}
     {!items.length && <Empty text={`لا توجد ${title} بعد. اضغط + لإضافة أول عنصر.`} />}
   </section>;
@@ -419,17 +448,30 @@ function ServersPage() {
   </div>;
 }
 function ProvidersPage() {
-  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState('');
+  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(''); const [open, setOpen] = useState(false);
   const load = () => api('/api/v1/admin/provider-instances').then(setRows).catch(e => setError(e.message));
   useEffect(() => { void load(); }, []);
   const remove = async (id: string) => { if (!confirm('حذف الـProvider؟')) return; try { await api(`/api/v1/admin/provider-instances/${id}`, { method: 'DELETE' }); load(); } catch (e: any) { setError(e.message); } };
   return <div className="page">
-    <Scene scene="mars" title="المزوّدون" sub="لوحات Marzban المتصلة. بيانات الدخول مخزنة مشفرة." />
+    <Scene scene="mars" title="المزوّدون" sub="لوحات Marzban المتصلة. بيانات الدخول مخزنة مشفرة." onAdd={() => setOpen(true)} addText="إضافة مزوّد" />
     <Panel className="table-panel">
       {error && <div className="alert error">{error}</div>}
-      <SimpleTable head={['الاسم', 'النوع', 'Base URL', 'الحالة', 'بيانات الدخول', '']} empty="لا يوجد مزوّد. أضفه بـ npm run provider:add على السيرفر." rows={rows.map(r => <tr key={r.id}><td><b>{r.name}</b></td><td>{r.type}</td><td dir="ltr" className="mono-ish">{r.base_url}</td><td><Status v={r.status} /></td><td>{r.has_credentials ? <Status v="ACTIVE" /> : <span className="status bad"><i />غير موجودة</span>}</td><td><button className="btn btn-danger btn-sm" onClick={() => remove(r.id)}><Trash2 size={14} /> حذف</button></td></tr>)} />
+      <SimpleTable head={['الاسم', 'النوع', 'Base URL', 'الحالة', 'بيانات الدخول', '']} empty="لا يوجد مزوّد. اضغط «إضافة مزوّد» لربط لوحة Marzban." rows={rows.map(r => <tr key={r.id}><td><b>{r.name}</b></td><td>{r.type}</td><td dir="ltr" className="mono-ish">{r.base_url}</td><td><Status v={r.status} /></td><td>{r.has_credentials ? <Status v="ACTIVE" /> : <span className="status bad"><i />غير موجودة</span>}</td><td><button className="btn btn-danger btn-sm" onClick={() => remove(r.id)}><Trash2 size={14} /> حذف</button></td></tr>)} />
     </Panel>
+    {open && <ProviderForm onClose={() => setOpen(false)} onDone={() => { setOpen(false); load(); }} />}
   </div>;
+}
+function ProviderForm({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [v, setV] = useState<any>({ baseUrl: 'http://marzban:8080' });
+  const { error, saving, save } = useSave(async () => { await api('/api/v1/admin/provider-instances', { method: 'POST', body: JSON.stringify(v) }); onDone(); });
+  return <Modal title="إضافة مزوّد Marzban" onClose={onClose}><form onSubmit={save}>
+    <Field label="الاسم" value={v.name || ''} onChange={x => setV({ ...v, name: x })} placeholder="marzban-de" />
+    <Field label="Base URL" value={v.baseUrl || ''} onChange={x => setV({ ...v, baseUrl: x })} placeholder="http://marzban:8080" />
+    <div className="field-pair"><Field label="اسم مستخدم الأدمن" value={v.username || ''} onChange={x => setV({ ...v, username: x })} /><Field label="كلمة المرور" type="password" value={v.password || ''} onChange={x => setV({ ...v, password: x })} /></div>
+    <p className="muted">تُحفظ بيانات الدخول مشفرة ولا تظهر مرة أخرى. استخدام نفس الاسم يحدّث المزوّد الموجود.</p>
+    {error && <div className="alert error">{error}</div>}
+    <button className="btn btn-signal btn-full" disabled={saving || !v.name || !v.baseUrl || !v.username || !v.password}>{saving ? 'جارٍ الحفظ…' : 'حفظ المزوّد'}</button>
+  </form></Modal>;
 }
 function ConfigsPage() {
   const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState('');
@@ -481,7 +523,7 @@ function App() {
     <Route path="/admin/configs" element={<ConfigsPage />} />
     <Route path="/admin/catalog" element={<Catalog />} />
     <Route path="/admin/orders" element={<ResourcePage kind="orders" user={user} />} />
-    <Route path="/admin/payments" element={<ResourcePage kind="payments" user={user} />} />
+    <Route path="/admin/payments" element={<PaymentsAdmin />} />
     <Route path="/admin/jobs" element={<ResourcePage kind="jobs" user={user} />} />
     <Route path="/admin/audit" element={<ResourcePage kind="audit" user={user} />} />
     <Route path="/admin/settings" element={<SettingsPage />} />

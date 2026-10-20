@@ -1,0 +1,104 @@
+import type { FastifyInstance } from 'fastify';
+import type { Pool } from 'pg';
+import { isPaymentMethod } from './availability.js';
+import { authenticateDevice, confirmPayment, createDevice, createPayment, getCustomerPayment, handleKashierWebhook, ingestSms, paymentOptions, PaymentError, plog, readScreenshot, rejectPayment, submitManualProof } from './service.js';
+
+type Deps = { pool: Pool; requirePermission: (req: any, perm: string) => void; requireCsrf: (req: any) => void };
+const isUuid = (v: any) => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+const needUuid = (v: any) => { if (!isUuid(v)) throw new PaymentError('Not found', 404, 'NOT_FOUND'); return v as string; };
+
+/* Customer: method selection, Vodafone proof, status polling, own screenshot. */
+export function registerCustomerPaymentRoutes(customer: FastifyInstance, d: Deps) {
+  customer.get('/orders/:id/payment-options', async (req: any) => paymentOptions(d.pool, needUuid(req.params.id), req.principal.id));
+  customer.post('/orders/:id/payments', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req: any) => {
+    d.requireCsrf(req);
+    const method = String(req.body?.method || '').toUpperCase();
+    if (!isPaymentMethod(method)) throw new PaymentError('طريقة دفع غير معروفة.', 400, 'BAD_METHOD');
+    plog('PAYMENT_METHOD_SELECTED', { orderId: req.params.id, method });
+    return createPayment(d.pool, { orderId: needUuid(req.params.id), customerId: req.principal.id, method }); // body amount is ignored on purpose
+  });
+  // Backwards compatible: old clients called /pay right after creating an order.
+  customer.post('/orders/:id/pay', async (req: any) => { d.requireCsrf(req); return createPayment(d.pool, { orderId: needUuid(req.params.id), customerId: req.principal.id, method: 'VODAFONE_CASH' }); });
+  customer.post('/payments/:id/manual-proof', { bodyLimit: 7 * 1024 * 1024, config: { rateLimit: { max: 6, timeWindow: '10 minutes' } } }, async (req: any) => {
+    d.requireCsrf(req);
+    const b = req.body || {};
+    return submitManualProof(d.pool, { paymentId: needUuid(req.params.id), customerId: req.principal.id, senderWallet: String(b.senderWallet || ''), screenshot: b.screenshot?.data ? { base64: String(b.screenshot.data), mime: String(b.screenshot.mime || '') } : undefined });
+  });
+  customer.get('/payments/:id', async (req: any) => getCustomerPayment(d.pool, needUuid(req.params.id), req.principal.id));
+  customer.get('/payments/:id/screenshot', async (req: any, reply: any) => {
+    const p = (await d.pool.query(`SELECT p.screenshot_path,p.screenshot_mime FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1 AND o.customer_id=$2`, [needUuid(req.params.id), req.principal.id])).rows[0];
+    if (!p?.screenshot_path) throw new PaymentError('Not found', 404, 'NOT_FOUND');
+    return reply.header('Content-Type', p.screenshot_mime).header('Cache-Control', 'private, no-store').header('X-Content-Type-Options', 'nosniff').send(await readScreenshot(p.screenshot_path));
+  });
+}
+
+/* Accountant dashboard. */
+export function registerAdminPaymentRoutes(admin: FastifyInstance, d: Deps) {
+  admin.get('/payments', async (req: any) => {
+    d.requirePermission(req, 'payments:read');
+    const f = String(req.query?.filter || 'all').toLowerCase();
+    const where: Record<string, string> = {
+      all: 'true', pending: `p.status IN ('AWAITING_TRANSFER','PENDING_VERIFICATION','CREATED','CHECKOUT_STARTED','PROCESSING')`, auto_verified: `p.status='AUTO_VERIFIED'`, paid: `p.status='PAID'`,
+      rejected: `p.status IN ('REJECTED','FAILED','CANCELLED')`, expired: `p.status IN ('EXPIRED','REVIEW_EXPIRED')`, kashier: `p.provider='KASHIER'`, vodafone_cash: `p.provider='MANUAL_VODAFONE_CASH'`, card: `p.method='CARD'`, apple_pay: `p.method='APPLE_PAY'`,
+    };
+    if (!where[f]) throw new PaymentError('Unknown filter', 400, 'BAD_FILTER');
+    return (await d.pool.query(`SELECT p.id,p.order_id,p.provider,p.method,p.status,p.amount_minor,p.currency,p.customer_wallet,p.receiving_wallet,p.provider_reference,p.provider_status,p.webhook_status,p.webhook_received_at,p.screenshot_path IS NOT NULL has_screenshot,p.match_details,p.expires_at,p.review_expires_at,p.auto_verified_at,p.verified_at,p.provisional_activation,p.created_at,
+      o.public_code order_code,c.full_name customer_name,c.public_code customer_code,
+      (SELECT json_build_object('reference',s.parsed_transaction_reference,'time',s.parsed_transaction_time,'sender',s.parsed_sender_wallet,'amountMinor',s.parsed_amount_minor) FROM payment_sms s WHERE s.payment_id=p.id ORDER BY s.created_at DESC LIMIT 1) sms
+      FROM payments p JOIN orders o ON o.id=p.order_id JOIN customers c ON c.id=o.customer_id WHERE ${where[f]} ORDER BY CASE p.status WHEN 'AUTO_VERIFIED' THEN 0 WHEN 'PENDING_VERIFICATION' THEN 1 ELSE 2 END, p.created_at DESC LIMIT 300`)).rows;
+  });
+  admin.get('/payments/:id', async (req: any) => {
+    d.requirePermission(req, 'payments:read');
+    const id = needUuid(req.params.id);
+    const p = (await d.pool.query(`SELECT p.*,o.public_code order_code,o.total_minor,c.full_name customer_name,c.mobile_phone customer_mobile FROM payments p JOIN orders o ON o.id=p.order_id JOIN customers c ON c.id=o.customer_id WHERE p.id=$1`, [id])).rows[0];
+    if (!p) throw new PaymentError('Not found', 404, 'NOT_FOUND');
+    const sms = (await d.pool.query(`SELECT id,raw_message,parse_status,parse_error,parsed_amount_minor,parsed_sender_wallet,parsed_sender_name,parsed_receiver_wallet,parsed_transaction_reference,parsed_transaction_time,match_status,match_details,received_at FROM payment_sms WHERE payment_id=$1 ORDER BY created_at DESC`, [id])).rows;
+    const audit = (await d.pool.query(`SELECT actor_type,actor_id,previous_status,new_status,reason,metadata,created_at FROM payment_audit_logs WHERE payment_id=$1 ORDER BY created_at`, [id])).rows;
+    const events = (await d.pool.query(`SELECT event_id,payload,result,received_at,processed_at FROM payment_events WHERE payment_id=$1 ORDER BY received_at`, [id])).rows;
+    const { screenshot_path, ...safe } = p;
+    return { ...safe, has_screenshot: Boolean(screenshot_path), sms, audit, events };
+  });
+  admin.get('/payments/:id/screenshot', async (req: any, reply: any) => {
+    d.requirePermission(req, 'payments:read');
+    const p = (await d.pool.query('SELECT screenshot_path,screenshot_mime FROM payments WHERE id=$1', [needUuid(req.params.id)])).rows[0];
+    if (!p?.screenshot_path) throw new PaymentError('Not found', 404, 'NOT_FOUND');
+    return reply.header('Content-Type', p.screenshot_mime).header('Cache-Control', 'private, no-store').header('X-Content-Type-Options', 'nosniff').send(await readScreenshot(p.screenshot_path));
+  });
+  admin.post('/payments/:id/confirm', async (req: any) => { d.requirePermission(req, 'payments:write'); d.requireCsrf(req); return confirmPayment(d.pool, { paymentId: needUuid(req.params.id), staffId: req.principal.id, reason: req.body?.reason }); });
+  admin.post('/payments/:id/reject', async (req: any) => { d.requirePermission(req, 'payments:write'); d.requireCsrf(req); return rejectPayment(d.pool, { paymentId: needUuid(req.params.id), staffId: req.principal.id, reason: String(req.body?.reason || '') }); });
+  admin.get('/payment-sms', async (req: any) => {
+    d.requirePermission(req, 'payments:read');
+    return (await d.pool.query(`SELECT s.id,s.parse_status,s.parse_error,s.parsed_amount_minor,s.parsed_sender_wallet,s.parsed_receiver_wallet,s.parsed_transaction_reference,s.parsed_transaction_time,s.match_status,s.match_details,s.received_at,dv.name device_name FROM payment_sms s LEFT JOIN payment_devices dv ON dv.id=s.device_id WHERE s.payment_id IS NULL ORDER BY s.created_at DESC LIMIT 200`)).rows;
+  });
+  admin.get('/payment-devices', async (req: any) => { d.requirePermission(req, 'payments:read'); return (await d.pool.query('SELECT id,device_key,name,enabled,last_seen_at,last_sms_at,created_at FROM payment_devices ORDER BY created_at')).rows; });
+  admin.post('/payment-devices', async (req: any) => {
+    d.requirePermission(req, 'payments:write'); d.requireCsrf(req);
+    const name = String(req.body?.name || '').trim().slice(0, 80); const key = String(req.body?.deviceKey || '').trim().toLowerCase();
+    if (!name || !/^[a-z0-9-]{3,40}$/.test(key)) throw new PaymentError('اكتب اسمًا ومعرّف جهاز (حروف إنجليزية صغيرة وأرقام وشرطة).', 400, 'BAD_DEVICE');
+    return createDevice(d.pool, name, key); // token is returned once and only stored hashed
+  });
+  admin.patch('/payment-devices/:id', async (req: any) => {
+    d.requirePermission(req, 'payments:write'); d.requireCsrf(req);
+    const r = await d.pool.query('UPDATE payment_devices SET enabled=$1,updated_at=now() WHERE id=$2 RETURNING id,device_key,name,enabled', [Boolean(req.body?.enabled), needUuid(req.params.id)]);
+    if (!r.rowCount) throw new PaymentError('Not found', 404, 'NOT_FOUND');
+    return r.rows[0];
+  });
+}
+
+/* Machine endpoints: Android SMS device + Kashier webhook (no session, own authentication). */
+export function registerPublicPaymentRoutes(app: FastifyInstance, d: Deps) {
+  const bearer = (req: any) => String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') || undefined;
+  app.post('/api/v1/payments/sms', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req: any) => {
+    const b = req.body || {};
+    const device = await authenticateDevice(d.pool, bearer(req), String(b.deviceId || ''));
+    plog('SMS_RECEIVED', { deviceId: device.id });
+    if (typeof b.message !== 'string' || !b.message.trim()) throw new PaymentError('message is required', 400, 'BAD_MESSAGE');
+    return ingestSms(d.pool, { deviceId: device.id, message: b.message, receivedAt: String(b.receivedAt || new Date().toISOString()) });
+  });
+  app.post('/api/v1/payments/devices/heartbeat', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req: any) => {
+    const device = await authenticateDevice(d.pool, bearer(req), String(req.body?.deviceId || ''));
+    return { ok: true, deviceId: device.device_key, serverTime: new Date().toISOString() };
+  });
+  app.post('/api/v1/payments/webhooks/kashier', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (req: any) =>
+    handleKashierWebhook(d.pool, { body: req.body, signature: req.headers['x-kashier-signature'] as string | undefined }));
+}

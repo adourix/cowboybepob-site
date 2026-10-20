@@ -5,6 +5,7 @@ import { api, dateOnly, gb, label, money, num, shortName } from '../../lib/api';
 import { usePortal } from '../Portal';
 import { canRevealLink, currentConfig, customerStatus, daysRemaining, selectLeftConfigService, selectPrimaryService, usagePercent } from '../selection';
 import { Banner, Bar, Empty, Hud, HudHead, Modal, Pill, Ring, useToast } from '../ui';
+import { PaymentFlow } from '../PaymentFlow';
 import { copyText, downloadLink, locationLabel, QrModal, ServiceDetailsModal, settingsText, statusTone, upper, useServiceLink } from '../serviceActions';
 
 export function Dashboard() {
@@ -15,7 +16,7 @@ export function Dashboard() {
   const leftConfigService = useMemo(() => selectLeftConfigService(services), [services]);
   const link = useServiceLink(toast.bad);
   const [modal, setModal] = useState<null | 'qr' | 'details' | 'guide'>(null); const [guide, setGuide] = useState('');
-  const [qrLink, setQrLink] = useState('');
+  const [qrLink, setQrLink] = useState(''); const [payOrder, setPayOrder] = useState<string | null>(null);
 
   // Spec §46: counts are independent of the selection.
   const activeCount = services.filter(s => s.status === 'ACTIVE').length;
@@ -28,7 +29,7 @@ export function Dashboard() {
   const doDownload = async () => { const l = await link.reveal(leftConfigService); if (l && leftConfigService) downloadLink(leftConfigService, l); };
   const renew = async () => {
     if (!primaryService) return;
-    try { const o = await api<any>(`/api/v1/customer/services/${primaryService.id}/renew`, { method: 'POST', body: JSON.stringify({}) }); await api(`/api/v1/customer/orders/${o.id}/pay`, { method: 'POST', body: JSON.stringify({}) }); toast.ok(`تم إنشاء طلب التجديد ${o.public_code}. سيُفعّل بعد تأكيد الدفع.`); await refresh(); }
+    try { const o = await api<any>(`/api/v1/customer/services/${primaryService.id}/renew`, { method: 'POST', body: JSON.stringify({}) }); await refresh(); setPayOrder(o.id); }
     catch (e: any) { toast.bad(e.message); }
   };
 
@@ -146,6 +147,7 @@ export function Dashboard() {
       </div>
     </div>}
 
+    {payOrder && <PaymentFlow orderId={payOrder} onClose={() => setPayOrder(null)} onDone={() => void refresh()} />}
     {modal === 'qr' && leftConfigService && <QrModal service={leftConfigService} link={qrLink} onClose={() => setModal(null)} />}
     {modal === 'details' && leftConfigService && <ServiceDetailsModal service={leftConfigService} onClose={() => setModal(null)} />}
     {modal === 'guide' && <Modal title={`الإعداد على ${GUIDES.find(g => g.key === guide)?.name}`} onClose={() => setModal(null)}><GuideBody k={guide} /></Modal>}

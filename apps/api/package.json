@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "node dist/main.js",
     "worker": "node dist/worker-v2.js",
-    "sync:endpoints": "tsx scripts/sync-endpoints.ts"
+    "sync:endpoints": "tsx scripts/sync-endpoints.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
@@ -24,6 +25,7 @@
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
   }
 }

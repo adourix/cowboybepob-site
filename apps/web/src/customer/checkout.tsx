@@ -19,7 +19,5 @@ export function LandlinePicker({ value, onChange }: { value: string; onChange: (
 
 export async function placeOrder(items: any[]) {
   const key = crypto.randomUUID();
-  const o = await api<any>('/api/v1/customer/orders', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ items }) });
-  await api(`/api/v1/customer/orders/${o.id}/pay`, { method: 'POST', body: JSON.stringify({}) });
-  return o;
+  return api<any>('/api/v1/customer/orders', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ items }) });
 }

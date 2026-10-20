@@ -4,6 +4,7 @@ import { BarChart3, Box, CalendarDays, Check, CheckCircle2, Clock3, FileText, La
 import { api, dateOnly, label, money, num } from '../../lib/api';
 import { usePortal } from '../Portal';
 import { Banner, Empty, Hud, Modal, Pill, useToast } from '../ui';
+import { PAY_STATUS, PaymentFlow } from '../PaymentFlow';
 
 type Step = { key: string; title: string; done: boolean; current: boolean; icon: React.ReactNode };
 const isRouterOrder = (o: any) => (o.items || []).some((i: any) => i.type === 'ROUTER');
@@ -26,7 +27,7 @@ export function orderSteps(o: any): Step[] {
 
 export function OrdersPage() {
   const { orders, refresh } = usePortal(); const toast = useToast(); const nav = useNavigate();
-  const [tab, setTab] = useState('all'); const [view, setView] = useState<any>(null);
+  const [tab, setTab] = useState('all'); const [view, setView] = useState<any>(null); const [payOrder, setPayOrder] = useState<string | null>(null);
   const TABS: [string, string, React.ReactNode][] = [['all', 'جميع الطلبات', <LayoutGrid size={18} />], ['config', 'الكونفيجات', <FileText size={18} />], ['router', 'الراوترات', <RouterIcon size={18} />], ['processing', 'قيد المعالجة', <Clock3 size={18} />], ['shipping', 'قيد الشحن', <Truck size={18} />], ['delivered', 'مكتملة', <CheckCircle2 size={18} />], ['cancelled', 'ملغاة', <X size={18} />]];
   const rows = orders.filter(o => tab === 'all' || (tab === 'config' && orderKind(o) !== 'router') || (tab === 'router' && orderKind(o) !== 'config') || bucket(o) === tab);
   const count = (b: string) => orders.filter(o => bucket(o) === b).length;
@@ -49,7 +50,9 @@ export function OrdersPage() {
                 <ol className="timeline">{steps.map(s => <li key={s.key} className={(s.done ? 'done' : '') + (s.current ? ' current' : '')}><span className="dot">{s.done ? <Check size={16} /> : s.icon}</span><small>{s.title}</small></li>)}</ol>}
               <div className="order-act">
                 <button className="cx-btn small outline-gold" onClick={() => setView(o)}>عرض التفاصيل</button>
-                {o.status === 'PENDING_PAYMENT' ? <button className="cx-btn small outline-red" onClick={() => cancel(o)}><X size={15} />إلغاء الطلب</button>
+                {o.status === 'PENDING_PAYMENT' && <button className="cx-btn small gold" onClick={() => setPayOrder(o.id)}>{['PENDING_VERIFICATION', 'AUTO_VERIFIED'].includes(o.payment_status) ? 'حالة الدفع' : 'ادفع الآن'}</button>}
+                {o.payment_status && PAY_STATUS[o.payment_status] && o.status !== 'COMPLETED' && <span className={`pay-chip t-${PAY_STATUS[o.payment_status][1]}`}>{PAY_STATUS[o.payment_status][0]}</span>}
+                {o.status === 'PENDING_PAYMENT' && !['PENDING_VERIFICATION', 'AUTO_VERIFIED'].includes(o.payment_status) ? <button className="cx-btn small outline-red" onClick={() => cancel(o)}><X size={15} />إلغاء الطلب</button>
                   : o.status === 'SHIPPED' ? <button className="cx-btn small outline" onClick={() => setView(o)}><Truck size={15} />تتبع الشحنة</button>
                   : o.status === 'COMPLETED' ? <span className="done-chip"><Check size={15} />{kind === 'config' ? 'تم التفعيل' : 'تم التسليم'}</span>
                   : (o.items || []).some((i: any) => i.planId || i.routerProductId) && o.status === 'CANCELLED' ? <button className="cx-btn small outline" onClick={() => reorder(o)}><RotateCcw size={15} />إعادة الشراء</button>
@@ -73,11 +76,12 @@ export function OrdersPage() {
         <Hud className="o-art"><img src="/bebop/planet-ring.webp" alt="" /></Hud>
       </aside>
     </div>
+    {payOrder && <PaymentFlow orderId={payOrder} onClose={() => { setPayOrder(null); void refresh(); }} onDone={() => void refresh()} />}
     {view && <Modal title={`الطلب ${view.public_code}`} onClose={() => setView(null)} wide>
       <dl className="kv">
         <div><dt>الحالة</dt><dd><Pill tone={view.status === 'COMPLETED' ? 'ok' : view.status === 'CANCELLED' ? 'bad' : 'warn'}>{label(view.status)}</Pill></dd></div>
         <div><dt>تاريخ الطلب</dt><dd>{dateOnly(view.placed_at)}</dd></div>
-        <div><dt>الدفع</dt><dd>{view.paid_at ? `مؤكد — ${dateOnly(view.paid_at)}` : view.payment_status === 'INITIATED' ? 'بانتظار تأكيد الإدارة' : view.payment_status === 'CANCELLED' ? 'ملغى' : 'لم يبدأ'}</dd></div>
+        <div><dt>الدفع</dt><dd>{view.paid_at ? `مؤكد — ${dateOnly(view.paid_at)}` : view.payment_status && PAY_STATUS[view.payment_status] ? PAY_STATUS[view.payment_status][0] : 'لم يبدأ'}</dd></div>
         <div><dt>الإجمالي</dt><dd>{money(view.total_minor, view.currency)}</dd></div>
       </dl>
       <h3 className="sub-h">العناصر</h3>

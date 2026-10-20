@@ -9,6 +9,7 @@ import { OrdersPage } from './pages/Orders';
 import { ServicesShop } from './pages/ServicesShop';
 import { RoutersShop } from './pages/RoutersShop';
 import { AddressPage, DevicesPage, PaymentsPage, PhonesPage, ProfilePage, SettingsPage, UsagePage } from './pages/Account';
+import { PaymentReturn } from './PaymentFlow';
 
 export type Profile = { id: string; public_code: string; full_name: string; email: string; mobile_phone: string; address_line: string; city: string; governorate: string | null; created_at?: string };
 export type PortalData = {
@@ -122,6 +123,7 @@ export function CustomerPortal({ user, onLogout }: { user: User; onLogout: () =>
           <Route path="/customer/address" element={<AddressPage />} />
           <Route path="/customer/devices" element={<DevicesPage />} />
           <Route path="/customer/usage" element={<UsagePage />} />
+          <Route path="/customer/payments/return" element={<PaymentReturn />} />
           <Route path="*" element={<Dashboard />} />
         </Routes>
       </main>

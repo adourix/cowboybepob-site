@@ -10,7 +10,7 @@
     "dev": "concurrently -k -n api,web -c blue,green \"npm run dev -w @cowboybepob/api\" \"npm run dev -w @cowboybepob/web\"",
     "build": "npm run build -w @cowboybepob/api && npm run build -w @cowboybepob/web",
     "typecheck": "npm run typecheck -w @cowboybepob/api && npm run typecheck -w @cowboybepob/web",
-    "test": "node scripts/test-architecture.mjs && npm run test -w @cowboybepob/web",
+    "test": "node scripts/test-architecture.mjs && npm run test -w @cowboybepob/web && npm run test -w @cowboybepob/api",
     "start:api": "npm run start -w @cowboybepob/api",
     "start:worker": "npm run worker -w @cowboybepob/api",
     "provider:add": "node apps/api/scripts/add-provider.mjs",
