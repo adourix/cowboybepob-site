@@ -75,7 +75,9 @@ export function parseOrangeCashSms(raw: string, ctx: { receivedAt: Date; ourWall
   const amount = t.match(/(?:بمبلغ|استلام\s*مبلغ)\s*([\d,]+(?:\.\d{1,2})?)\s*جن(?:يه|ية)/);
   if (!amount) return fail('AMOUNT_NOT_FOUND');
 
-  const afterAmount = t.match(/جن(?:يه|ية)\s*من\s*(.+?)(?=\s*(?:رصيد(?:ك|\s*(?:ا|أ)ورن(?:ج|چ)\s*كاش)|،?\s*رصيد)|\s*$)/);
+  // Allow Arabic/ASCII punctuation between sender name/number and the balance.
+  // Real Orange messages use the Arabic comma: "من Abdelrahman I Ayad، رصيدك...".
+  const afterAmount = t.match(/جن(?:يه|ية)\s*من\s*(.+?)(?=\s*[،,؛]?\s*رصيد(?:ك|\s*(?:ا|أ)ورن(?:ج|چ)\s*كاش)|\s*$)/);
   const senderRaw = afterAmount?.[1]?.trim().replace(/[؛،,]+$/, '').trim() || null;
   if (!senderRaw) return fail('SENDER_NOT_FOUND');
 
