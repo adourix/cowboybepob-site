@@ -8,8 +8,9 @@ import { normalizeDigits, parseMajorToMinor } from './money.js';
  *   رصيدك الحالي: 2509.88 جنيه  رقم العملية: 024786200222
  * Date is YY-MM-DD in Egypt local time (Africa/Cairo).
  */
+export type Carrier = 'VODAFONE' | 'ORANGE';
 export type ParsedSms = {
-  ok: true; amountMinor: number; senderWallet: string; senderName: string | null; receiverWallet: string;
+  ok: true; carrier?: Carrier; receiverFromConfig?: boolean; timeFromReceipt?: boolean; amountMinor: number; senderWallet: string; senderName: string | null; receiverWallet: string;
   transactionTime: string; transactionDate: string; occurredAt: Date; balanceMinor: number | null; reference: string | null;
 };
 export type ParseFailure = { ok: false; reason: string; looksLikeVodafoneCash: boolean };
@@ -25,6 +26,50 @@ export function normalizeWallet(raw: any): string | null {
 export function looksLikeVodafoneCash(raw: string) {
   const t = normalizeDigits(raw);
   return /تم\s*استلام\s*مبلغ/.test(t) || /محفظتك/.test(t) || /vf\.eg\/vfcash/i.test(t) || /فودافون\s*كاش/.test(t);
+}
+export function looksLikeOrangeCash(raw: string) {
+  const t = normalizeDigits(raw);
+  return /استقبلت\s*تحويل\s*أموال/.test(t) || /(?:ا|أ)ورن(?:ج|چ)\s*كاش/.test(t);
+}
+/** Any wallet receipt we know how to read (used to refuse unrelated personal SMS before storing anything). */
+export const looksLikeWalletSms = (raw: string) => looksLikeVodafoneCash(raw) || looksLikeOrangeCash(raw);
+
+/**
+ * Orange Cash "money received" SMS. Example:
+ *   لقد استقبلت تحويل أموال بمبلغ 5.00 جنيه من 00201009823007رصيد اورنچ كاش الجديد 15.20 جنيه رقم المعاملة 25000247335451
+ * It carries NO receiving wallet and NO date/time, so:
+ *   - receiver = our configured Orange wallet (the SMS can only arrive on that phone's wallet)
+ *   - time     = when the phone received the SMS (receivedAt)
+ */
+export function parseOrangeCashSms(raw: string, ctx: { receivedAt: Date; ourWallet: string | null }): ParsedSms | ParseFailure {
+  const fail = (reason: string): ParseFailure => ({ ok: false, reason, looksLikeVodafoneCash: true });
+  if (!raw || raw.length > 2000) return fail('EMPTY_OR_TOO_LONG');
+  const t = normalizeDigits(raw).replace(/\s+/g, ' ');
+  if (!/استقبلت\s*تحويل\s*أموال/.test(t)) return fail('NOT_A_RECEIPT');
+  const amount = t.match(/بمبلغ\s*([\d,]+(?:\.\d{1,2})?)\s*جنيه/);
+  const sender = t.match(/جنيه\s*من\s*(\+?\d{10,14})/); // digits stop where "رصيد" starts (no space in real SMS)
+  if (!amount) return fail('AMOUNT_NOT_FOUND');
+  if (!sender) return fail('SENDER_NOT_FOUND');
+  const amountMinor = parseMajorToMinor(amount[1]); const senderWallet = normalizeWallet(sender[1]);
+  if (amountMinor == null || amountMinor <= 0) return fail('AMOUNT_INVALID');
+  if (!senderWallet) return fail('SENDER_INVALID');
+  if (!ctx.ourWallet) return fail('ORANGE_WALLET_NOT_CONFIGURED');
+  if (isNaN(ctx.receivedAt.getTime())) return fail('DATE_INVALID');
+  const balance = t.match(/رصيد\s*(?:ا|أ)ورن(?:ج|چ)\s*كاش\s*الجديد\s*:?\s*([\d,]+(?:\.\d{1,2})?)/);
+  const ref = t.match(/رقم\s*المعاملة\s*:?\s*([A-Za-z0-9]{6,32})/);
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Cairo', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(ctx.receivedAt).map(x => [x.type, x.value]));
+  return {
+    ok: true, carrier: 'ORANGE', receiverFromConfig: true, timeFromReceipt: true, amountMinor, senderWallet, senderName: null, receiverWallet: ctx.ourWallet,
+    transactionTime: `${parts.hour}:${parts.minute}`, transactionDate: `${parts.year}-${parts.month}-${parts.day}`, occurredAt: ctx.receivedAt,
+    balanceMinor: balance ? parseMajorToMinor(balance[1]) : null, reference: ref ? ref[1] : null,
+  };
+}
+
+/** Picks the right parser for the SMS format. */
+export function parseWalletSms(raw: string, ctx: { receivedAt: Date; orangeWallet: string | null }): ParsedSms | ParseFailure {
+  if (looksLikeOrangeCash(raw) && !/تم\s*استلام\s*مبلغ/.test(normalizeDigits(raw))) return parseOrangeCashSms(raw, { receivedAt: ctx.receivedAt, ourWallet: ctx.orangeWallet });
+  const r = parseVodafoneCashSms(raw);
+  return r.ok ? { ...r, carrier: 'VODAFONE' } : r;
 }
 
 /** Africa/Cairo wall-clock → UTC instant (handles Egypt DST via ICU). */

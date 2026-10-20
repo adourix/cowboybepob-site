@@ -210,6 +210,26 @@ async function main() {
   ok('customer cannot use manual paste', (await me.req('POST', '/api/v1/admin/payment-sms/manual', { message: sms('1.00', '01275555667').text })).status === 401);
   ok('paste is audited', Number((await q(`SELECT count(*) n FROM audit_logs WHERE action='payment.sms_pasted'`)).rows[0].n) >= 2);
 
+  console.log('ORANGE CASH');
+  const orangeSms = (amount, sender, ref = '25' + String(Date.now()).slice(-10) + Math.floor(Math.random() * 90 + 10)) => ({ ref, text: `لقد استقبلت تحويل أموال بمبلغ ${amount} جنيه من 0020${sender.slice(1)}رصيد اورنچ كاش الجديد 15.20 جنيه رقم المعاملة ${ref}` });
+  const oOpt = await me.req('GET', `/api/v1/customer/orders/${(await order(cust, 2600)).id}/payment-options`);
+  ok('Orange Cash offered when ORANGE_CASH_RECEIVING_WALLET is set', oOpt.body.methods.some(m => m.method === 'ORANGE_CASH' && m.available));
+  const oo = await order(cust, 2700 + Math.floor(Math.random() * 900));
+  const oc = await me.req('POST', `/api/v1/customer/orders/${oo.id}/payments`, { method: 'ORANGE_CASH' });
+  ok('Orange payment shows the Orange wallet', oc.body.action?.receivingWallet === '01200000001' && oc.body.action.method === 'ORANGE_CASH', JSON.stringify(oc.body));
+  const op = oc.body.payment.id; const oamt = (await q(`SELECT total_minor FROM orders WHERE id=$1`, [oo.id])).rows[0].total_minor;
+  await me.req('POST', `/api/v1/customer/payments/${op}/manual-proof`, { senderWallet: '01275555667', screenshot: { mime: 'image/png', data: PNG } });
+  const egp2 = m => `${Math.floor(m / 100)}.${String(m % 100).padStart(2, '0')}`;
+  const os1 = orangeSms(egp2(Number(oamt)), '01275555667');
+  const or1 = await raw(os1.text, 'text/plain', { 'x-device-token': TOKEN });
+  ok('real-format Orange SMS (sender 0020…, no date/receiver) → MATCHED', or1.body.status === 'MATCHED' && or1.body.paymentId === op, JSON.stringify(or1.body));
+  ok('stored with carrier ORANGE', (await q(`SELECT carrier FROM payment_sms WHERE parsed_transaction_reference=$1`, [os1.ref])).rows[0]?.carrier === 'ORANGE');
+  ok('reused Orange transaction number → DUPLICATE', (await raw(os1.text.replace('15.20', '16.20'), 'text/plain', { 'x-device-token': TOKEN })).body.status === 'DUPLICATE');
+  const vamt = 3100 + Math.floor(Math.random() * 900); const vp = await pending(vamt);
+  const cross = await raw(orangeSms(egp2(vamt), '01275555667').text, 'text/plain', { 'x-device-token': TOKEN });
+  ok('Orange SMS cannot verify a Vodafone Cash payment (different receiving wallet)', cross.body.status === 'UNMATCHED' && (await q(`SELECT status FROM payments WHERE id=$1`, [vp])).rows[0].status === 'PENDING_VERIFICATION', JSON.stringify(cross.body));
+  ok('provider renamed to MANUAL_WALLET', (await q(`SELECT provider FROM payments WHERE id=$1`, [op])).rows[0].provider === 'MANUAL_WALLET');
+
   console.log('SECURITY');
   ok('34. invalid device token rejected', (await sendSms(sms('1.00', '01275555667').text, 'x'.repeat(40))).status === 401);
   await admin.req('PATCH', `/api/v1/admin/payment-devices/${dev.body.device.id}`, { enabled: false });

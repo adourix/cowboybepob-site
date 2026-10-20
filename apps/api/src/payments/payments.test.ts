@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import crypto from 'node:crypto';
 import { formatMinor, normalizeDigits, parseMajorToMinor } from './money.js';
-import { cairoToUtc, normalizeWallet, parseVodafoneCashSms } from './vodafoneSms.js';
+import { cairoToUtc, looksLikeWalletSms, normalizeWallet, parseOrangeCashSms, parseVodafoneCashSms, parseWalletSms } from './vodafoneSms.js';
 import { matchSms, PendingPayment } from './matcher.js';
 import { buildKashierCheckoutUrl, kashierOrderHash, kashierWebhookSignature, normalizeKashierEvent, verifyKashierWebhook } from './kashier.js';
 import { methodAvailability } from './availability.js';
@@ -122,5 +122,34 @@ describe('Kashier (official algorithms)', () => {
     expect(normalizeKashierEvent({ event: 'pay', data }, 'major')).toMatchObject({ method: 'CARD', amountMinor: 16500, status: 'SUCCESS', transactionId: 'TX-1' });
     expect(normalizeKashierEvent({ event: 'pay', data: { ...data, method: 'apple_pay' } }, 'major')?.method).toBe('APPLE_PAY');
     expect(normalizeKashierEvent({ event: 'pay', data: { ...data, amount: 16500 } }, 'minor')?.amountMinor).toBe(16500);
+  });
+});
+
+describe('Orange Cash SMS (no receiver, no date in the message)', () => {
+  const ORANGE = 'لقد استقبلت تحويل أموال بمبلغ 5.00 جنيه من 00201009823007رصيد اورنچ كاش الجديد 15.20 جنيه رقم المعاملة 25000247335451';
+  const at = new Date('2026-10-20T12:30:00Z');
+  it('parses the real sample (digits glued to "رصيد")', () => {
+    const r = parseOrangeCashSms(ORANGE, { receivedAt: at, ourWallet: '01200000001' });
+    expect(r.ok).toBe(true); if (!r.ok) return;
+    expect(r).toMatchObject({ carrier: 'ORANGE', amountMinor: 500, senderWallet: '01009823007', receiverWallet: '01200000001', balanceMinor: 1520, reference: '25000247335451', receiverFromConfig: true, timeFromReceipt: true });
+    expect(r.occurredAt.toISOString()).toBe(at.toISOString());
+    expect(r.transactionTime).toBe('15:30'); // Cairo (UTC+3 in October)
+  });
+  it('dispatcher picks the right format', () => {
+    expect((parseWalletSms(ORANGE, { receivedAt: at, orangeWallet: '01200000001' }) as any).carrier).toBe('ORANGE');
+    const vf = 'تم استلام مبلغ 10.00 جنيه من 01275555667؛ على رقم محفظتك 01044577552 بتاريخ 18:47 26-10-16. رقم العملية: 1234567';
+    expect((parseWalletSms(vf, { receivedAt: at, orangeWallet: '01200000001' }) as any).carrier).toBe('VODAFONE');
+  });
+  it('Arabic-Indic digits and أورنج spelling', () => {
+    const ar = ORANGE.replace(/\d/g, d => '٠١٢٣٤٥٦٧٨٩'[Number(d)]).replace('اورنچ', 'أورنج');
+    const r = parseOrangeCashSms(ar, { receivedAt: at, ourWallet: '01200000001' });
+    expect(r.ok && r.amountMinor === 500 && r.senderWallet === '01009823007' && r.reference === '25000247335451').toBe(true);
+  });
+  it('refuses to guess the receiver when no Orange wallet is configured', () => {
+    expect(parseOrangeCashSms(ORANGE, { receivedAt: at, ourWallet: null })).toMatchObject({ ok: false, reason: 'ORANGE_WALLET_NOT_CONFIGURED' });
+  });
+  it('recognised as a wallet receipt (stored), unrelated SMS still refused', () => {
+    expect(looksLikeWalletSms(ORANGE)).toBe(true);
+    expect(looksLikeWalletSms('عرض خاص من أورنج: باقة جديدة')).toBe(false);
   });
 });

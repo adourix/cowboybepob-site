@@ -2,12 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { Check, Copy, Eye, MessageSquareText, Plus, RefreshCw, Smartphone, X } from 'lucide-react';
 import { api, date, money } from '../lib/api';
 
-const FILTERS: [string, string][] = [['all', 'الكل'], ['auto_verified', 'تحقق تلقائي'], ['pending', 'قيد الانتظار'], ['paid', 'مدفوع'], ['rejected', 'مرفوض/فشل'], ['expired', 'منتهي'], ['vodafone_cash', 'فودافون كاش'], ['kashier', 'Kashier'], ['card', 'بطاقة'], ['apple_pay', 'Apple Pay']];
+const FILTERS: [string, string][] = [['all', 'الكل'], ['auto_verified', 'تحقق تلقائي'], ['pending', 'قيد الانتظار'], ['paid', 'مدفوع'], ['rejected', 'مرفوض/فشل'], ['expired', 'منتهي'], ['vodafone_cash', 'فودافون كاش'], ['orange_cash', 'أورنج كاش'], ['kashier', 'Kashier'], ['card', 'بطاقة'], ['apple_pay', 'Apple Pay']];
 const ST: Record<string, [string, string]> = {
   AWAITING_TRANSFER: ['بانتظار التحويل', 'warn'], PENDING_VERIFICATION: ['بانتظار رسالة SMS', 'warn'], AUTO_VERIFIED: ['تحقق تلقائي — يحتاج مراجعة', 'warn'], PAID: ['مدفوع', 'ok'],
   REJECTED: ['مرفوض', 'bad'], EXPIRED: ['منتهي', 'idle'], REVIEW_EXPIRED: ['انتهت مهلة المراجعة', 'bad'], CREATED: ['جديد', 'idle'], CHECKOUT_STARTED: ['في صفحة الدفع', 'warn'], PROCESSING: ['قيد المعالجة', 'warn'], FAILED: ['فشل', 'bad'], CANCELLED: ['ملغى', 'idle'],
 };
-const METHOD: Record<string, string> = { VODAFONE_CASH: 'فودافون كاش', CARD: 'بطاقة', APPLE_PAY: 'Apple Pay' };
+const METHOD: Record<string, string> = { VODAFONE_CASH: 'فودافون كاش', ORANGE_CASH: 'أورنج كاش', CARD: 'بطاقة', APPLE_PAY: 'Apple Pay' };
 function S({ v }: { v: string }) { const [t, tone] = ST[v] || [v, 'idle']; return <span className={`status ${tone}`}><i aria-hidden />{t}</span>; }
 const left = (iso?: string) => { if (!iso) return ''; const m = Math.round((new Date(iso).getTime() - Date.now()) / 60000); return m <= 0 ? 'انتهت' : m < 60 ? `${m} د` : `${Math.floor(m / 60)} س ${m % 60} د`; };
 
@@ -107,7 +107,7 @@ export function PasteSms({ onDone, compact }: { onDone?: () => void; compact?: b
     } catch (e: any) { setRes({ tone: 'bad', msg: e.message }); } finally { setBusy(false); }
   };
   return <div className={`paste-sms ${compact ? 'compact' : ''}`}>
-    {!compact && <div><b>لصق رسالة فودافون كاش</b><p className="muted">بدون هاتف مربوط: انسخ رسالة «تم استلام مبلغ…» من هاتف المحفظة والصقها هنا.</p></div>}
+    {!compact && <div><b>لصق رسالة تحويل</b><p className="muted">بدون هاتف مربوط: انسخ رسالة فودافون كاش («تم استلام مبلغ…») أو أورنج كاش («لقد استقبلت تحويل أموال…») والصقها هنا.</p></div>}
     <textarea dir="rtl" rows={compact ? 4 : 5} value={text} onChange={e => setText(e.target.value)} placeholder="تم استلام مبلغ 50.00 جنيه من 010…؛ … رقم العملية: …" aria-label="نص الرسالة" />
     <div className="row-actions"><button className="btn btn-signal" disabled={busy || text.trim().length < 20} onClick={send}><MessageSquareText size={16} /> {busy ? 'جارٍ الفحص…' : 'فحص ومطابقة'}</button>{res && <span className={`status ${res.tone}`}><i />{res.msg}</span>}</div>
   </div>;
@@ -134,13 +134,14 @@ function MacroDroidHelp() {
     <ol>
       <li>أضف جهازًا من النموذج بالأسفل وانسخ التوكن.</li>
       <li>على هاتف محفظة الاستلام ثبّت <b>MacroDroid</b> من Google Play، وامنحه صلاحية قراءة الرسائل.</li>
-      <li>ماكرو جديد ← المشغّل: <b>SMS Received</b> ← «Content contains»: <code>تم استلام مبلغ</code></li>
+      <li>ماكرو جديد ← المشغّل: <b>SMS Received</b> ← «Content contains»: <code>تم استلام مبلغ</code> (فودافون كاش)</li>
       <li>الإجراء: <b>HTTP Request</b> ← Method: <b>POST</b> ← URL: <C v={url} k="u" /></li>
       <li>Headers: أضف <C v="X-Device-Token" k="h" /> وقيمته التوكن.</li>
       <li>Body / Content type: <b>text/plain</b> ← المحتوى: <C v="[sms_message]" k="b" /></li>
+      <li>لأورنج كاش: كرر نفس الماكرو بشرط <code>استقبلت تحويل أموال</code> (نفس الرابط والتوكن). يجب أن يكون هاتف أورنج كاش هو نفسه المسجّل في إعداد ORANGE_CASH_RECEIVING_WALLET.</li>
       <li>أرسل لنفسك تحويلًا تجريبيًا؛ يجب أن تظهر الرسالة في «رسائل غير مطابقة» أو تُطابق دفعة.</li>
     </ol>
-    <p className="muted">الرسائل الأخرى لا تُرسل بفضل شرط «تم استلام مبلغ»، والخادم يرفض أي رسالة ليست إيصال فودافون كاش بدون حفظها. إذا انقطع النت، لا يعيد MacroDroid الإرسال تلقائيًا؛ الصق الرسالة يدويًا من تبويب «رسائل غير مطابقة».</p>
+    <p className="muted">الرسائل الأخرى لا تُرسل بفضل شرط النص في كل ماكرو، والخادم يرفض أي رسالة ليست إيصال فودافون كاش بدون حفظها. إذا انقطع النت، لا يعيد MacroDroid الإرسال تلقائيًا؛ الصق الرسالة يدويًا من تبويب «رسائل غير مطابقة».</p>
   </details>;
 }
 

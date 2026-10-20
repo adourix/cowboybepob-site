@@ -3,7 +3,7 @@ import { Apple, CheckCircle2, Clock3, CreditCard, ImageUp, Loader2, ShieldCheck,
 import { api, moneyNum } from '../lib/api';
 import { copyText, Modal } from './ui';
 
-type Method = 'VODAFONE_CASH' | 'CARD' | 'APPLE_PAY';
+type Method = 'VODAFONE_CASH' | 'ORANGE_CASH' | 'CARD' | 'APPLE_PAY';
 type Options = { orderId: string; orderCode: string; amountMinor: number; currency: string; gatewayMinMinor: number; methods: { method: Method; available: boolean; reason: string | null }[]; openPayment: any };
 
 /** Customer-facing wording only. The backend decides; this never shows success before PAID. */
@@ -14,6 +14,7 @@ export const PAY_STATUS: Record<string, [string, 'ok' | 'warn' | 'bad' | 'idle' 
 };
 const METHOD_UI: Record<Method, { title: string; sub: string; icon: React.ReactNode }> = {
   VODAFONE_CASH: { title: 'فودافون كاش', sub: 'حوّل من محفظتك ثم أرسل الإيصال', icon: <Smartphone size={22} /> },
+  ORANGE_CASH: { title: 'أورنج كاش', sub: 'حوّل من أي محفظة إلى رقم أورنج كاش', icon: <Smartphone size={22} /> },
   CARD: { title: 'Visa / Mastercard', sub: 'دفع آمن عبر Kashier', icon: <CreditCard size={22} /> },
   APPLE_PAY: { title: 'Apple Pay', sub: 'عبر Kashier من أجهزة Apple', icon: <Apple size={22} /> },
 };
@@ -53,7 +54,7 @@ export function PaymentFlow({ orderId, onClose, onDone }: { orderId: string; onC
         </div>
         {opts.amountMinor < opts.gatewayMinMinor && <p className="cx-note">الدفع بالبطاقة و Apple Pay متاح للطلبات من {minEgp} جنيه فأكثر.</p>}
         {err && <div className="cx-alert bad">{err}</div>}
-        <button className="cx-btn gold big block" onClick={start} disabled={busy}>{busy ? <Loader2 size={18} className="spin" /> : <ShieldCheck size={18} />}{method === 'VODAFONE_CASH' ? 'متابعة' : method === 'APPLE_PAY' ? 'الدفع بـ Apple Pay' : 'الدفع بالبطاقة'}</button>
+        <button className="cx-btn gold big block" onClick={start} disabled={busy}>{busy ? <Loader2 size={18} className="spin" /> : <ShieldCheck size={18} />}{method === 'VODAFONE_CASH' || method === 'ORANGE_CASH' ? 'متابعة' : method === 'APPLE_PAY' ? 'الدفع بـ Apple Pay' : 'الدفع بالبطاقة'}</button>
       </div>}
   </Modal>;
 }
@@ -78,13 +79,13 @@ function VodafoneStep({ action, amountMinor, onSubmitted }: { action: any; amoun
   return <form className="payflow" onSubmit={submit}>
     <ol className="vc-steps">
       <li><b>حوّل المبلغ بالضبط</b><div className="vc-box"><span>المبلغ</span><strong>{moneyNum(amountMinor)} جنيه</strong></div></li>
-      <li><b>إلى محفظة فودافون كاش</b><div className="vc-box"><span dir="ltr" className="wallet">{action.receivingWallet}</span><button type="button" className="cx-btn small outline" onClick={async () => { if (await copyText(action.receivingWallet)) { setCopied(true); setTimeout(() => setCopied(false), 1500); } }}>{copied ? 'تم النسخ' : 'نسخ الرقم'}</button></div><small className="cx-muted">رقم الطلب: <span dir="ltr">{action.orderCode}</span> · حوّل خلال المهلة: حتى {new Date(action.expiresAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</small></li>
+      <li><b>{action.method === 'ORANGE_CASH' ? 'إلى محفظة أورنج كاش' : 'إلى محفظة فودافون كاش'}</b><div className="vc-box"><span dir="ltr" className="wallet">{action.receivingWallet}</span><button type="button" className="cx-btn small outline" onClick={async () => { if (await copyText(action.receivingWallet)) { setCopied(true); setTimeout(() => setCopied(false), 1500); } }}>{copied ? 'تم النسخ' : 'نسخ الرقم'}</button></div><small className="cx-muted">رقم الطلب: <span dir="ltr">{action.orderCode}</span> · حوّل خلال المهلة: حتى {new Date(action.expiresAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</small></li>
       <li><b>اكتب رقم المحفظة التي حوّلت منها وارفع صورة الإيصال</b>
         <label className="cx-field"><span>رقم محفظتك</span><input dir="ltr" inputMode="tel" placeholder="01012345678" value={wallet} onChange={e => setWallet(e.target.value)} required /></label>
         <label className="upload"><input type="file" accept="image/jpeg,image/png,image/webp" onChange={e => pick(e.target.files?.[0] || null)} />{preview ? <img src={preview} alt="معاينة الإيصال" /> : <><ImageUp size={26} /><span>اختر صورة الإيصال</span></>}</label>
       </li>
     </ol>
-    <p className="cx-note">نتحقق من الدفع تلقائيًا من رسالة فودافون كاش التي تصل لمحفظتنا، ثم يراجعه المحاسب. الصورة للمساعدة فقط.</p>
+    <p className="cx-note">نتحقق من الدفع تلقائيًا من رسالة التحويل التي تصل لمحفظتنا، ثم يراجعه المحاسب. الصورة للمساعدة فقط.</p>
     {err && <div className="cx-alert bad">{err}</div>}
     <button className="cx-btn gold big block" disabled={busy}>{busy ? <Loader2 size={18} className="spin" /> : null}{busy ? 'جارٍ الإرسال…' : 'أرسلت المبلغ — تحقق من الدفع'}</button>
   </form>;
@@ -106,7 +107,7 @@ export function PaymentStatus({ initial, onDone }: { initial: any; onDone?: () =
     {p.status === 'AUTO_VERIFIED' && <p>تم العثور على تحويلك. خدمتك تعمل الآن، ويؤكد المحاسب الدفع خلال 24 ساعة.</p>}
     {p.status === 'PAID' && <p>شكرًا لك! يتم تجهيز طلبك الآن.</p>}
     {['REJECTED', 'REVIEW_EXPIRED'].includes(p.status) && <p>لم نتمكن من تأكيد الدفع. إذا كنت حوّلت المبلغ، تواصل معنا ومعك رقم الطلب.</p>}
-    <dl className="kv small"><div><dt>المبلغ</dt><dd>{moneyNum(p.amountMinor)} جنيه</dd></div><div><dt>الطريقة</dt><dd>{p.method === 'VODAFONE_CASH' ? 'فودافون كاش' : p.method === 'APPLE_PAY' ? 'Apple Pay' : 'بطاقة'}</dd></div></dl>
+    <dl className="kv small"><div><dt>المبلغ</dt><dd>{moneyNum(p.amountMinor)} جنيه</dd></div><div><dt>الطريقة</dt><dd>{p.method === 'VODAFONE_CASH' ? 'فودافون كاش' : p.method === 'ORANGE_CASH' ? 'أورنج كاش' : p.method === 'APPLE_PAY' ? 'Apple Pay' : 'بطاقة'}</dd></div></dl>
   </div>;
 }
 

@@ -42,7 +42,7 @@ export function registerAdminPaymentRoutes(admin: FastifyInstance, d: Deps) {
     const f = String(req.query?.filter || 'all').toLowerCase();
     const where: Record<string, string> = {
       all: 'true', pending: `p.status IN ('AWAITING_TRANSFER','PENDING_VERIFICATION','CREATED','CHECKOUT_STARTED','PROCESSING')`, auto_verified: `p.status='AUTO_VERIFIED'`, paid: `p.status='PAID'`,
-      rejected: `p.status IN ('REJECTED','FAILED','CANCELLED')`, expired: `p.status IN ('EXPIRED','REVIEW_EXPIRED')`, kashier: `p.provider='KASHIER'`, vodafone_cash: `p.provider='MANUAL_VODAFONE_CASH'`, card: `p.method='CARD'`, apple_pay: `p.method='APPLE_PAY'`,
+      rejected: `p.status IN ('REJECTED','FAILED','CANCELLED')`, expired: `p.status IN ('EXPIRED','REVIEW_EXPIRED')`, kashier: `p.provider='KASHIER'`, vodafone_cash: `p.method='VODAFONE_CASH'`, orange_cash: `p.method='ORANGE_CASH'`, card: `p.method='CARD'`, apple_pay: `p.method='APPLE_PAY'`,
     };
     if (!where[f]) throw new PaymentError('Unknown filter', 400, 'BAD_FILTER');
     return (await d.pool.query(`SELECT p.id,p.order_id,p.provider,p.method,p.status,p.amount_minor,p.currency,p.customer_wallet,p.receiving_wallet,p.provider_reference,p.provider_status,p.webhook_status,p.webhook_received_at,p.screenshot_path IS NOT NULL has_screenshot,p.match_details,p.expires_at,p.review_expires_at,p.auto_verified_at,p.verified_at,p.provisional_activation,p.created_at,
@@ -77,10 +77,10 @@ export function registerAdminPaymentRoutes(admin: FastifyInstance, d: Deps) {
   admin.post('/payment-sms/manual', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req: any) => {
     d.requirePermission(req, 'payments:write'); d.requireCsrf(req);
     const message = String(req.body?.message || '').trim();
-    if (!message) throw new PaymentError('الصق نص رسالة فودافون كاش.', 400, 'BAD_MESSAGE');
+    if (!message) throw new PaymentError('الصق نص رسالة التحويل.', 400, 'BAD_MESSAGE');
     const dev = (await d.pool.query(`INSERT INTO payment_devices(device_key,name,device_token_hash) VALUES('manual-paste','لصق يدوي من لوحة الإدارة',$1) ON CONFLICT(device_key) DO UPDATE SET last_seen_at=now() RETURNING id,enabled`, [crypto.randomBytes(32)])).rows[0];
     const r: any = await ingestSms(d.pool, { deviceId: dev.id, message, receivedAt: new Date().toISOString() });
-    if (r.ignored) throw new PaymentError('هذا النص لا يبدو رسالة استلام من فودافون كاش.', 422, 'NOT_VODAFONE_CASH');
+    if (r.ignored) throw new PaymentError('هذا النص لا يبدو رسالة استلام من فودافون كاش أو أورنج كاش.', 422, 'NOT_WALLET_SMS');
     plog('SMS_MANUAL_PASTE', { staffId: req.principal.id, status: r.status || (r.duplicate ? 'DUPLICATE' : '') });
     await d.pool.query(`INSERT INTO audit_logs(actor_type,actor_id,action,entity_type,entity_id,metadata) VALUES('STAFF',$1,'payment.sms_pasted','payments',$2,$3)`, [req.principal.id, r.paymentId || null, { status: r.status || null, reason: r.reason || null, duplicate: Boolean(r.duplicate) }]);
     return r;

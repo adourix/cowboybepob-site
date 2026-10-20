@@ -11,6 +11,19 @@ everything provider-specific lives in `apps/api/src/payments/`.
 The rule is enforced by the API (`422 BELOW_GATEWAY_MINIMUM`); the UI only mirrors it.
 Amounts are integer piasters everywhere. The amount always comes from the order row, never from the client.
 
+## Manual wallets (Vodafone Cash, Orange Cash)
+
+Both use provider `MANUAL_WALLET` (same SMS matching + accountant review). Method is `VODAFONE_CASH` or `ORANGE_CASH`.
+Orange Cash appears for customers only when `ORANGE_CASH_RECEIVING_WALLET` is set.
+
+Orange Cash SMS example (as received):
+`لقد استقبلت تحويل أموال بمبلغ 5.00 جنيه من 00201009823007رصيد اورنچ كاش الجديد 15.20 جنيه رقم المعاملة 25000247335451`
+
+It contains no receiving wallet and no date, so the receiver is our configured Orange wallet and the time is when the
+phone received the SMS. Forward Orange SMS from the phone that holds that Orange wallet (MacroDroid: a second macro with
+content contains `استقبلت تحويل أموال`). An Orange SMS can never verify a Vodafone Cash payment (different receiving wallet).
+When pasting an old Orange SMS manually, the paste time is used — the transaction number still blocks re-use.
+
 ## Vodafone Cash
 
 ```

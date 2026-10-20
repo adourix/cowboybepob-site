@@ -6,7 +6,7 @@ import { kashierConfigured, paymentConfig } from './config.js';
 import { methodAvailability, PaymentMethod, PROVIDER_FOR } from './availability.js';
 import { buildKashierCheckoutUrl, normalizeKashierEvent, verifyKashierWebhook } from './kashier.js';
 import { matchSms, PendingPayment } from './matcher.js';
-import { looksLikeVodafoneCash, normalizeWallet, parseVodafoneCashSms } from './vodafoneSms.js';
+import { looksLikeWalletSms, normalizeWallet, parseWalletSms } from './vodafoneSms.js';
 
 /**
  * PaymentService — the only module that changes payment state.
@@ -80,7 +80,7 @@ export async function paymentOptions(pool: Pool, orderId: string, customerId: st
   const open = (await pool.query(`SELECT id,method,status,expires_at FROM payments WHERE order_id=$1 AND status=ANY($2::text[]) ORDER BY created_at DESC LIMIT 1`, [o.id, [...OPEN_STATUSES, 'AUTO_VERIFIED']])).rows[0] || null;
   return {
     orderId: o.id, orderCode: o.public_code, amountMinor: Number(o.total_minor), currency: o.currency, orderStatus: o.status,
-    gatewayMinMinor: cfg.gatewayMinMinor, methods: methodAvailability(Number(o.total_minor), { gatewayMinMinor: cfg.gatewayMinMinor, kashierReady: kashierConfigured(cfg), vodafoneReady: cfg.receivingWallets.length > 0 }),
+    gatewayMinMinor: cfg.gatewayMinMinor, methods: methodAvailability(Number(o.total_minor), { gatewayMinMinor: cfg.gatewayMinMinor, kashierReady: kashierConfigured(cfg), vodafoneReady: cfg.vodafoneWallets.length > 0, orangeReady: cfg.orangeWallets.length > 0 }),
     openPayment: open,
   };
 }
@@ -93,7 +93,7 @@ export async function createPayment(pool: Pool, input: { orderId: string; custom
     if (!o) throw new PaymentError('Not found', 404, 'NOT_FOUND');
     if (o.status !== 'PENDING_PAYMENT') throw new PaymentError('هذا الطلب لا ينتظر الدفع.', 409, 'ORDER_NOT_PAYABLE');
     const amountMinor = Number(o.total_minor); // server-side amount only; anything the client sends is ignored
-    const avail = methodAvailability(amountMinor, { gatewayMinMinor: cfg.gatewayMinMinor, kashierReady: kashierConfigured(cfg), vodafoneReady: cfg.receivingWallets.length > 0 }).find(m => m.method === input.method)!;
+    const avail = methodAvailability(amountMinor, { gatewayMinMinor: cfg.gatewayMinMinor, kashierReady: kashierConfigured(cfg), vodafoneReady: cfg.vodafoneWallets.length > 0, orangeReady: cfg.orangeWallets.length > 0 }).find(m => m.method === input.method)!;
     if (!avail.available) {
       plog('PAYMENT_METHOD_REJECTED', { orderId: o.id, method: input.method, reason: avail.reason, amountMinor });
       throw new PaymentError(avail.reason === 'BELOW_GATEWAY_MINIMUM' ? `الدفع بالبطاقة أو Apple Pay متاح للطلبات من ${cfg.gatewayMinMinor / 100} جنيه فأكثر.` : 'طريقة الدفع غير متاحة حاليًا.', 422, avail.reason || 'METHOD_UNAVAILABLE');
@@ -104,13 +104,14 @@ export async function createPayment(pool: Pool, input: { orderId: string; custom
       await transition(c, p, 'CANCELLED', { type: 'CUSTOMER', id: input.customerId }, 'REPLACED_BY_NEW_ATTEMPT');
     }
     const provider = PROVIDER_FOR[input.method];
-    if (provider === 'MANUAL_VODAFONE_CASH') {
-      const wallet = cfg.receivingWallets[0];
-      const p = (await c.query(`INSERT INTO payments(order_id,gateway,provider,method,amount_minor,currency,status,receiving_wallet,expires_at) VALUES($1,'manual','MANUAL_VODAFONE_CASH','VODAFONE_CASH',$2,$3,'AWAITING_TRANSFER',$4,now()+make_interval(mins=>$5)) RETURNING *`, [o.id, amountMinor, o.currency, wallet, cfg.paymentWindowMinutes])).rows[0];
+    if (provider === 'MANUAL_WALLET') {
+      // The customer is told exactly one wallet; it is stored on the payment so a later wallet change can't break matching.
+      const wallet = input.method === 'ORANGE_CASH' ? cfg.orangeWallets[0] : cfg.vodafoneWallets[0];
+      const p = (await c.query(`INSERT INTO payments(order_id,gateway,provider,method,amount_minor,currency,status,receiving_wallet,expires_at) VALUES($1,'manual','MANUAL_WALLET',$6,$2,$3,'AWAITING_TRANSFER',$4,now()+make_interval(mins=>$5)) RETURNING *`, [o.id, amountMinor, o.currency, wallet, cfg.paymentWindowMinutes, input.method])).rows[0];
       await c.query('INSERT INTO payment_audit_logs(payment_id,actor_type,actor_id,previous_status,new_status,reason) VALUES($1,$2,$3,NULL,$4,$5)', [p.id, 'CUSTOMER', input.customerId, p.status, 'PAYMENT_CREATED']);
       await c.query('UPDATE orders SET payment_method=$1,payment_status=$2,payment_id=$3,updated_at=now() WHERE id=$4', [p.method, p.status, p.id, o.id]);
       plog('PAYMENT_CREATED', { paymentId: p.id, orderId: o.id, provider, method: p.method, amountMinor });
-      return { payment: publicPayment(p), action: { type: 'VODAFONE_INSTRUCTIONS', receivingWallet: wallet, amountMinor, orderCode: o.public_code, expiresAt: p.expires_at } };
+      return { payment: publicPayment(p), action: { type: 'WALLET_INSTRUCTIONS', method: input.method, receivingWallet: wallet, amountMinor, orderCode: o.public_code, expiresAt: p.expires_at } };
     }
     const p = (await c.query(`INSERT INTO payments(order_id,gateway,provider,method,amount_minor,currency,status,expires_at) VALUES($1,'kashier','KASHIER',$2,$3,$4,'CREATED',now()+make_interval(mins=>$5)) RETURNING *`, [o.id, input.method, amountMinor, o.currency, cfg.kashier.checkoutTtlMinutes])).rows[0];
     await c.query('INSERT INTO payment_audit_logs(payment_id,actor_type,actor_id,previous_status,new_status,reason) VALUES($1,$2,$3,NULL,$4,$5)', [p.id, 'CUSTOMER', input.customerId, 'CREATED', 'PAYMENT_CREATED']);
@@ -156,7 +157,7 @@ export async function submitManualProof(pool: Pool, input: { paymentId: string; 
   const result = await tx(pool, async c => {
     const p = (await c.query(`SELECT p.*,o.customer_id FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1 AND o.customer_id=$2 FOR UPDATE OF p`, [input.paymentId, input.customerId])).rows[0];
     if (!p) throw new PaymentError('Not found', 404, 'NOT_FOUND');
-    if (p.provider !== 'MANUAL_VODAFONE_CASH') throw new PaymentError('هذه الدفعة ليست فودافون كاش.', 409, 'WRONG_PROVIDER');
+    if (p.provider !== 'MANUAL_WALLET') throw new PaymentError('هذه الدفعة ليست تحويل محفظة.', 409, 'WRONG_PROVIDER');
     if (!['AWAITING_TRANSFER', 'PENDING_VERIFICATION'].includes(p.status)) throw new PaymentError('لا يمكن تعديل بيانات هذه الدفعة الآن.', 409, 'NOT_EDITABLE');
     if (!shot && !p.screenshot_path) throw new PaymentError('ارفع صورة إيصال التحويل.', 400, 'SCREENSHOT_REQUIRED');
     const row = await transition(c, p, 'PENDING_VERIFICATION', { type: 'CUSTOMER', id: input.customerId }, 'PROOF_SUBMITTED', { screenshot: Boolean(shot) }, {
@@ -221,20 +222,20 @@ async function autoVerify(c: PoolClient, p: any, sms: any, m: any) {
 export async function ingestSms(pool: Pool, input: { deviceId: string; message: string; receivedAt: string }) {
   const cfg = paymentConfig();
   const message = String(input.message || '').slice(0, 2000);
-  if (!looksLikeVodafoneCash(message)) { plog('SMS_IGNORED', { deviceId: input.deviceId }); return { accepted: false, ignored: true }; } // never store unrelated SMS
+  if (!looksLikeWalletSms(message)) { plog('SMS_IGNORED', { deviceId: input.deviceId }); return { accepted: false, ignored: true }; } // never store unrelated SMS
   const receivedAt = new Date(input.receivedAt); if (isNaN(receivedAt.getTime())) throw new PaymentError('receivedAt is invalid', 400, 'BAD_RECEIVED_AT');
   const hash = crypto.createHash('sha256').update(message.replace(/\s+/g, ' ').trim()).digest('hex');
   return tx(pool, async c => {
     await c.query('UPDATE payment_devices SET last_sms_at=now(),last_seen_at=now() WHERE id=$1', [input.deviceId]);
-    const parsed = parseVodafoneCashSms(message);
+    const parsed = parseWalletSms(message, { receivedAt, orangeWallet: cfg.orangeWallets[0] || null });
     let matchStatus = parsed.ok ? 'UNMATCHED' : 'MANUAL_REVIEW';
     if (parsed.ok && parsed.reference) {
       const dup = await c.query(`SELECT id FROM payment_sms WHERE parsed_transaction_reference=$1 AND match_status<>'DUPLICATE' LIMIT 1`, [parsed.reference]);
       if (dup.rowCount) matchStatus = 'DUPLICATE';
     }
-    const ins = await c.query(`INSERT INTO payment_sms(device_id,raw_message,message_hash,parse_status,parse_error,parsed_amount_minor,parsed_sender_wallet,parsed_sender_name,parsed_receiver_wallet,parsed_transaction_reference,parsed_transaction_time,parsed_balance_minor,match_status,received_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(message_hash) DO NOTHING RETURNING *`,
-      [input.deviceId, message, hash, parsed.ok ? 'PARSED' : 'FAILED', parsed.ok ? null : parsed.reason, parsed.ok ? parsed.amountMinor : null, parsed.ok ? parsed.senderWallet : null, parsed.ok ? parsed.senderName : null, parsed.ok ? parsed.receiverWallet : null, parsed.ok ? parsed.reference : null, parsed.ok ? parsed.occurredAt : null, parsed.ok ? parsed.balanceMinor : null, matchStatus, receivedAt]);
+    const ins = await c.query(`INSERT INTO payment_sms(device_id,raw_message,message_hash,parse_status,parse_error,parsed_amount_minor,parsed_sender_wallet,parsed_sender_name,parsed_receiver_wallet,parsed_transaction_reference,parsed_transaction_time,parsed_balance_minor,match_status,received_at,carrier)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(message_hash) DO NOTHING RETURNING *`,
+      [input.deviceId, message, hash, parsed.ok ? 'PARSED' : 'FAILED', parsed.ok ? null : parsed.reason, parsed.ok ? parsed.amountMinor : null, parsed.ok ? parsed.senderWallet : null, parsed.ok ? parsed.senderName : null, parsed.ok ? parsed.receiverWallet : null, parsed.ok ? parsed.reference : null, parsed.ok ? parsed.occurredAt : null, parsed.ok ? parsed.balanceMinor : null, matchStatus, receivedAt, parsed.ok ? (parsed.carrier || 'VODAFONE') : null]);
     if (!ins.rowCount) { plog('SMS_DUPLICATE', { deviceId: input.deviceId }); return { accepted: true, duplicate: true }; }
     const sms = ins.rows[0];
     plog(parsed.ok ? 'SMS_PARSED' : 'SMS_PARSE_FAILED', { smsId: sms.id, reason: parsed.ok ? undefined : parsed.reason });
@@ -244,7 +245,7 @@ export async function ingestSms(pool: Pool, input: { deviceId: string; message: 
       await c.query(`UPDATE payment_sms SET match_details=$1 WHERE id=$2`, [{ reason: 'RECEIVER_NOT_OURS' }, sms.id]);
       return { accepted: true, status: 'UNMATCHED', reason: 'RECEIVER_NOT_OURS' };
     }
-    const cands = (await c.query(`SELECT * FROM payments WHERE provider='MANUAL_VODAFONE_CASH' AND status='PENDING_VERIFICATION' AND customer_wallet=$1 ORDER BY created_at FOR UPDATE SKIP LOCKED`, [parsed.senderWallet])).rows;
+    const cands = (await c.query(`SELECT * FROM payments WHERE provider='MANUAL_WALLET' AND status='PENDING_VERIFICATION' AND customer_wallet=$1 ORDER BY created_at FOR UPDATE SKIP LOCKED`, [parsed.senderWallet])).rows;
     const m = matchSms(parsed, cands.map(pendingFromRow), { skewMinutes: cfg.smsClockSkewMinutes });
     if (m.status !== 'MATCHED') { await c.query(`UPDATE payment_sms SET match_details=$1 WHERE id=$2`, [m, sms.id]); return { accepted: true, status: 'UNMATCHED', reason: m.reason }; }
     const p = cands.find((x: any) => x.id === m.paymentId);
@@ -361,7 +362,7 @@ export async function handleKashierWebhook(pool: Pool, input: { body: any; signa
 /* ─────────────── read models ─────────────── */
 export function publicPayment(p: any) {
   // Customer-safe: no raw SMS, no screenshot path, no match internals.
-  return { id: p.id, orderId: p.order_id, provider: p.provider, method: p.method, status: p.status, amountMinor: Number(p.amount_minor), currency: p.currency, receivingWallet: p.provider === 'MANUAL_VODAFONE_CASH' ? p.receiving_wallet : undefined, customerWallet: p.customer_wallet || null, hasScreenshot: Boolean(p.screenshot_path), expiresAt: p.expires_at, reviewExpiresAt: p.review_expires_at, verifiedAt: p.verified_at, createdAt: p.created_at };
+  return { id: p.id, orderId: p.order_id, provider: p.provider, method: p.method, status: p.status, amountMinor: Number(p.amount_minor), currency: p.currency, receivingWallet: p.provider === 'MANUAL_WALLET' ? p.receiving_wallet : undefined, customerWallet: p.customer_wallet || null, hasScreenshot: Boolean(p.screenshot_path), expiresAt: p.expires_at, reviewExpiresAt: p.review_expires_at, verifiedAt: p.verified_at, createdAt: p.created_at };
 }
 export async function getCustomerPayment(pool: Pool, paymentId: string, customerId: string) {
   const p = (await pool.query(`SELECT p.*,o.public_code order_code FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=$1 AND o.customer_id=$2`, [paymentId, customerId])).rows[0];

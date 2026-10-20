@@ -6,14 +6,16 @@ export function paymentConfig() {
   const env = process.env;
   const gatewayMin = parseMajorToMinor(env.PAYMENT_GATEWAY_MIN_AMOUNT || '75');
   if (gatewayMin == null) throw new Error('PAYMENT_GATEWAY_MIN_AMOUNT is invalid');
-  const wallets = String(env.VODAFONE_CASH_RECEIVING_WALLET || '').split(',').map(w => normalizeWallet(w)).filter(Boolean) as string[];
+  const list = (v?: string) => String(v || '').split(',').map(w => normalizeWallet(w)).filter(Boolean) as string[];
+  const vodafoneWallets = list(env.VODAFONE_CASH_RECEIVING_WALLET), orangeWallets = list(env.ORANGE_CASH_RECEIVING_WALLET);
   return {
     gatewayMinMinor: gatewayMin,
     reviewHours: positiveInt(env.ACCOUNTANT_REVIEW_HOURS, 24),
     paymentWindowMinutes: positiveInt(env.PAYMENT_WINDOW_MINUTES, 30),
     smsClockSkewMinutes: positiveInt(env.PAYMENT_SMS_CLOCK_SKEW_MINUTES, 10),
     provisionalActivation: env.PAYMENT_PROVISIONAL_ACTIVATION !== 'false',
-    receivingWallets: wallets,
+    vodafoneWallets, orangeWallets,
+    receivingWallets: [...vodafoneWallets, ...orangeWallets], // any SMS must be for one of OUR wallets
     uploadDir: env.PAYMENT_UPLOAD_DIR || 'storage/payment-screenshots',
     maxScreenshotBytes: positiveInt(env.PAYMENT_SCREENSHOT_MAX_BYTES, 4 * 1024 * 1024),
     publicAppUrl: (env.PUBLIC_APP_URL || env.CORS_ORIGIN || 'http://localhost:5173').replace(/\/$/, ''),

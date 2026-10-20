@@ -124,7 +124,7 @@ export function PaymentsPage() {
   const st: Record<string, [string, 'ok' | 'warn' | 'bad' | 'idle']> = Object.fromEntries(Object.entries(PAY_STATUS).map(([k, [t, tone]]) => [k, [t, tone === 'info' ? 'warn' : tone]])) as any;
   return <Shell title="المدفوعات" sub="طريقة الدفع الحالية وسجل مدفوعاتك.">
     {toast.node}
-    <Hud className="pay-method"><h2 className="sub-h">طريقة الدفع</h2><p>فودافون كاش متاح لكل الطلبات: حوّل المبلغ وأرسل رقم محفظتك وصورة الإيصال، ونتحقق تلقائيًا من رسالة التحويل ثم يراجعها المحاسب. البطاقات و Apple Pay متاحة للطلبات من 75 جنيه عبر Kashier، ولا نخزن أي بيانات بطاقات لدينا.</p></Hud>
+    <Hud className="pay-method"><h2 className="sub-h">طريقة الدفع</h2><p>فودافون كاش (وأورنج كاش إن كان متاحًا) لكل الطلبات: حوّل المبلغ وأرسل رقم محفظتك وصورة الإيصال، ونتحقق تلقائيًا من رسالة التحويل ثم يراجعها المحاسب. البطاقات و Apple Pay متاحة للطلبات من 75 جنيه عبر Kashier، ولا نخزن أي بيانات بطاقات لدينا.</p></Hud>
     <Hud>{rows === null ? <p className="cx-muted">جارٍ التحميل…</p> : rows.length ? <table className="cx-table"><thead><tr><th>الطلب</th><th>المبلغ</th><th>الحالة</th><th>التاريخ</th></tr></thead><tbody>
       {rows.map(p => <tr key={p.id}><td dir="ltr">{p.order_code}</td><td>{money(p.amount_minor, p.currency)}</td><td><Pill tone={(st[p.status] || ['', 'idle'])[1]}>{(st[p.status] || [p.status])[0]}</Pill></td><td>{dateOnly(p.paid_at || p.created_at)}</td></tr>)}
     </tbody></table> : <Empty title="لا توجد مدفوعات بعد" />}</Hud>
